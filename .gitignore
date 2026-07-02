@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+.tox/
+.coverage
+.cache
+.pytest_cache/
+
+# Node/Frontend
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# Environments / Sensitive Files
+.env
+.env.local
+.env.*.local
+
+# System/IDE
+.vscode/
+.idea/
+*.suo
+*.sw?
+.DS_Store
+Thumbs.db
