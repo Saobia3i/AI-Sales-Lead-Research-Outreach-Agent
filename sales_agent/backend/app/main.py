@@ -15,7 +15,13 @@ from app.schemas import (
     ResearchCompanyRequest,
     ResearchCompanyResponse,
     SalesAgentState,
+    LeadSearchRequest,
+    LeadSearchResponse,
+    LeadEmailRequest,
+    LeadDraftEmail,
+    LeadOutreachDrafts,
 )
+from app.services.lead_discovery import find_leads_pipeline, generate_custom_lead_email
 
 
 app = FastAPI(title="AI Sales Lead Research & Outreach Agent", version="0.1.0")
@@ -31,6 +37,27 @@ app.add_middleware(
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse()
+
+
+@app.post("/api/v1/find_leads", response_model=LeadSearchResponse)
+async def find_leads(request: LeadSearchRequest) -> LeadSearchResponse:
+    try:
+        return await find_leads_pipeline(request)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lead discovery failed: {str(e)}")
+
+
+@app.post("/api/v1/generate_lead_email", response_model=LeadOutreachDrafts)
+async def generate_lead_email(request: LeadEmailRequest) -> LeadOutreachDrafts:
+    try:
+        return await generate_custom_lead_email(
+            lead=request.lead,
+            sender_name=request.sender_name,
+            sender_company=request.sender_company,
+            service_desc=request.service_description,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Email generation failed: {str(e)}")
 
 
 @app.post("/api/v1/research_company", response_model=ResearchCompanyResponse)

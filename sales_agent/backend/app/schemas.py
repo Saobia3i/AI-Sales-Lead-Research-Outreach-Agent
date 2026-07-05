@@ -165,3 +165,60 @@ class FullPipelineResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
+
+
+class LeadBusiness(BaseModel):
+    """A discovered business without a website."""
+    business_name: str
+    category: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    google_maps_url: str | None = None
+    has_website: bool = False
+    website_url: str | None = None  # null means no website found
+    has_social_media: bool = False
+    social_links: list[str] = Field(default_factory=list)
+    source_url: str | None = None  # where we found this business
+    confidence_no_website: float = Field(ge=0.0, le=1.0, default=0.8)
+
+
+class LeadDraftEmail(BaseModel):
+    """An editable outreach draft for a specific lead."""
+    to_business: str
+    subject: str
+    body: str
+
+
+class LeadOutreachDrafts(BaseModel):
+    """Multiple outreach channels for a lead."""
+    email_subject: str | None = None
+    email_body: str | None = None
+    social_dm_body: str | None = None
+    sms_whatsapp_body: str | None = None
+    call_script_body: str | None = None
+
+
+class LeadSearchRequest(BaseModel):
+    business_category: str  # e.g. "beauty salons", "tutoring centers"
+    location: str  # e.g. "Dhaka", "Sylhet, Bangladesh"
+    sender_name: str = "Your Name"
+    sender_company: str = "Your Company"
+    service_description: str = "We build professional, affordable websites for small businesses"
+    max_results: int = Field(default=15, ge=1, le=50)
+
+
+class LeadSearchResponse(BaseModel):
+    leads: list[LeadBusiness]
+    total_found: int
+    total_without_website: int
+    draft_email: LeadDraftEmail  # generic template or example
+    search_query_used: str
+    errors: list[str] = Field(default_factory=list)
+
+
+class LeadEmailRequest(BaseModel):
+    lead: LeadBusiness
+    sender_name: str
+    sender_company: str
+    service_description: str

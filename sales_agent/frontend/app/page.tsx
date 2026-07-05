@@ -23,6 +23,10 @@ import {
   Paper,
   IconButton,
   Tooltip,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  ButtonGroup,
 } from "@mui/material";
 import Grid from "@mui/material/Grid";
 import {
@@ -34,83 +38,115 @@ import {
   Business as BusinessIcon,
   Language as LanguageIcon,
   Place as PlaceIcon,
-  People as PeopleIcon,
   OpenInNew as OpenInNewIcon,
   ContentCopy as ContentCopyIcon,
-  Article as ArticleIcon,
+  Phone as PhoneIcon,
+  Mail as MailIcon,
+  Settings as SettingsIcon,
+  AutoAwesome as MagicIcon,
+  ExpandMore as ExpandMoreIcon,
+  Check as CheckIcon,
+  FilterList as FilterIcon,
+  Sms as SmsIcon,
+  Call as CallIcon,
+  Message as MessageIcon,
 } from "@mui/icons-material";
 
-type EvidenceRef = {
-  url: string;
-  relevance_score: number;
-  used_for_claim: string;
+type LeadBusiness = {
+  business_name: string;
+  category: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  google_maps_url: string | null;
+  has_website: boolean;
+  website_url: string | null;
+  has_social_media: boolean;
+  social_links: string[];
+  source_url: string | null;
+  confidence_no_website: number;
 };
 
-type CompanyProfile = {
-  company_name: string;
-  website: string | null;
-  industry: string | null;
-  company_size_estimate: string | null;
-  hq_location: string | null;
-  recent_news: { headline: string; summary: string; source_url: string; date: string | null }[];
-  pain_point_signals: string[];
-  evidence_sources: EvidenceRef[];
-  insufficient_evidence: string[];
+type LeadDraftEmail = {
+  to_business: string;
+  subject: string;
+  body: string;
 };
 
-type FullPipelineResponse = {
-  profile: CompanyProfile;
-  draft_email: { subject: string; body: string; claims_used: string[] };
-  verification_report: {
-    claim: string;
-    status: "verified" | "unverified" | "not_a_factual_claim";
-    evidence_ref: string | null;
-    confidence: number;
-  }[];
+type LeadOutreachDrafts = {
+  email_subject: string | null;
+  email_body: string | null;
+  social_dm_body: string | null;
+  sms_whatsapp_body: string | null;
+  call_script_body: string | null;
+};
+
+type LeadSearchResponse = {
+  leads: LeadBusiness[];
+  total_found: number;
+  total_without_website: number;
+  draft_email: LeadDraftEmail;
+  search_query_used: string;
   errors: string[];
 };
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-// Design Palette
 const theme = createTheme({
   palette: {
+    mode: "dark",
     primary: {
-      main: "#2f6654", // Moss green
-      contrastText: "#ffffff",
+      main: "#0ea5e9", // Sky blue
+      contrastText: "#030712",
     },
     secondary: {
-      main: "#c8513d", // Coral
+      main: "#10b981", // Emerald green
+    },
+    warning: {
+      main: "#f59e0b", // Amber
+    },
+    error: {
+      main: "#f43f5e", // Rose red
     },
     background: {
-      default: "#f7f8f5", // Light neutral paper tone
-      paper: "#ffffff",
+      default: "#030712", // Very dark grey/black
+      paper: "#0b1528",   // Deep blue-grey
     },
     text: {
-      primary: "#17211f", // Dark Ink
-      secondary: "#5c6b68",
+      primary: "#f3f4f6", // Off white
+      secondary: "#9ca3af", // Cool grey
     },
   },
   typography: {
-    fontFamily: '"Inter", "Roboto", "Helvetica", "Arial", sans-serif',
+    fontFamily: '"Outfit", "Inter", "Roboto", "Helvetica", sans-serif',
     h4: {
+      fontWeight: 800,
+      letterSpacing: "-0.03em",
+    },
+    h5: {
       fontWeight: 700,
       letterSpacing: "-0.02em",
     },
     h6: {
       fontWeight: 600,
     },
+    body1: {
+      lineHeight: 1.6,
+    },
   },
   components: {
     MuiButton: {
       styleOverrides: {
         root: {
-          borderRadius: 8,
+          borderRadius: 10,
           textTransform: "none",
           fontWeight: 600,
+          padding: "10px 20px",
           boxShadow: "none",
+          transition: "all 0.2s ease-in-out",
           "&:hover": {
-            boxShadow: "none",
+            boxShadow: "0 0 15px rgba(14, 165, 233, 0.4)",
+            transform: "translateY(-1px)",
           },
         },
       },
@@ -118,46 +154,107 @@ const theme = createTheme({
     MuiOutlinedInput: {
       styleOverrides: {
         root: {
-          borderRadius: 8,
+          borderRadius: 10,
+          backgroundColor: "rgba(15, 23, 42, 0.6)",
+          transition: "all 0.2s ease-in-out",
+          "&:hover .MuiOutlinedInput-notchedOutline": {
+            borderColor: "rgba(14, 165, 233, 0.5)",
+          },
+          "&.Mui-focused .MuiOutlinedInput-notchedOutline": {
+            borderColor: "#0ea5e9",
+            boxShadow: "0 0 0 3px rgba(14, 165, 233, 0.2)",
+          },
         },
       },
     },
     MuiCard: {
       styleOverrides: {
         root: {
-          borderRadius: 12,
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.05)",
-          border: "1px solid #e2e8f0",
+          borderRadius: 16,
+          backgroundImage: "none",
+          backgroundColor: "#0d1b35",
+          border: "1px solid rgba(255, 255, 255, 0.05)",
+          boxShadow: "0 4px 30px rgba(0, 0, 0, 0.2)",
+          transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
         },
       },
     },
   },
 });
 
+const SUGGESTIONS = ["Beauty Salons", "Tutoring Centers", "Gyms", "Cafes", "Dentists", "Mechanics"];
+
 export default function Home() {
-  const [companyInput, setCompanyInput] = useState("");
-  const [productDescription, setProductDescription] = useState("");
-  const [result, setResult] = useState<FullPipelineResponse | null>(null);
+  const [category, setCategory] = useState("Beauty Salons");
+  const [location, setLocation] = useState("Dhaka");
+  const [senderName, setSenderName] = useState("Fahim");
+  const [senderCompany, setSenderCompany] = useState("Aether Web Agency");
+  const [serviceDesc, setServiceDesc] = useState(
+    "We design stunning, high-converting websites optimized for local search and mobile, helping small businesses double their client bookings."
+  );
+
+  const [leads, setLeads] = useState<LeadBusiness[]>([]);
+  const [globalEmail, setGlobalEmail] = useState<LeadDraftEmail | null>(null);
+  const [selectedLead, setSelectedLead] = useState<LeadBusiness | null>(null);
+  const [customOutreach, setCustomOutreach] = useState<LeadOutreachDrafts | null>(null);
+  const [isCustomOutreachLoading, setIsCustomOutreachLoading] = useState(false);
+  const [filterNoWebsite, setFilterNoWebsite] = useState(true);
+  const [searchQueryUsed, setSearchQueryUsed] = useState("");
+
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  async function runPipeline(event: FormEvent<HTMLFormElement>) {
+  // Outreach Composer Tabs
+  const [activeTab, setActiveTab] = useState<"email" | "social_dm" | "sms_whatsapp" | "call_script">("email");
+
+  // Edited outreach channel states
+  const [editedEmailSubject, setEditedEmailSubject] = useState("");
+  const [editedEmailBody, setEditedEmailBody] = useState("");
+  const [editedSocialDM, setEditedSocialDM] = useState("");
+  const [editedSMS, setEditedSMS] = useState("");
+  const [editedScript, setEditedScript] = useState("");
+
+  async function runSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsLoading(true);
     setError(null);
-    setResult(null);
+    setSelectedLead(null);
+    setCustomOutreach(null);
+    setLeads([]);
 
     try {
-      const response = await fetch(`${apiBase}/api/v1/full_pipeline`, {
+      const response = await fetch(`${apiBase}/api/v1/find_leads`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ company_input: companyInput, product_description: productDescription }),
+        body: JSON.stringify({
+          business_category: category,
+          location: location,
+          sender_name: senderName,
+          sender_company: senderCompany,
+          service_description: serviceDesc,
+        }),
       });
       if (!response.ok) {
-        throw new Error(`Pipeline failed with ${response.status}`);
+        throw new Error(`Lead search failed with status ${response.status}`);
       }
-      setResult((await response.json()) as FullPipelineResponse);
+      const data = (await response.json()) as LeadSearchResponse;
+      setLeads(data.leads);
+      setGlobalEmail(data.draft_email);
+      setSearchQueryUsed(data.search_query_used);
+      if (data.errors && data.errors.length > 0) {
+        setError(data.errors.join(", "));
+      }
+
+      // Default select the first lead if any exist
+      if (data.leads && data.leads.length > 0) {
+        const firstNoWeb = data.leads.find((l) => !l.has_website);
+        if (firstNoWeb) {
+          selectLead(firstNoWeb);
+        } else {
+          selectLead(data.leads[0]);
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -165,67 +262,243 @@ export default function Home() {
     }
   }
 
+  const selectLead = async (lead: LeadBusiness) => {
+    setSelectedLead(lead);
+    setCustomOutreach(null);
+    setEditedEmailSubject("");
+    setEditedEmailBody("");
+    setEditedSocialDM("");
+    setEditedSMS("");
+    setEditedScript("");
+    setIsCustomOutreachLoading(true);
+
+    try {
+      const res = await fetch(`${apiBase}/api/v1/generate_lead_email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lead: lead,
+          sender_name: senderName,
+          sender_company: senderCompany,
+          service_description: serviceDesc,
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as LeadOutreachDrafts;
+        setCustomOutreach(data);
+        setEditedEmailSubject(data.email_subject || "");
+        setEditedEmailBody(data.email_body || "");
+        setEditedSocialDM(data.social_dm_body || "");
+        setEditedSMS(data.sms_whatsapp_body || "");
+        setEditedScript(data.call_script_body || "");
+
+        // Set default active tab based on available channels
+        if (lead.email) {
+          setActiveTab("email");
+        } else if (lead.has_social_media && lead.social_links.length > 0) {
+          setActiveTab("social_dm");
+        } else if (lead.phone) {
+          setActiveTab("sms_whatsapp");
+        } else {
+          setActiveTab("email");
+        }
+      } else {
+        throw new Error("Failed to generate custom outreach");
+      }
+    } catch (err) {
+      // Fallback
+      const fallbackSubject = `Website proposal for ${lead.business_name}`;
+      const fallbackBody =
+        globalEmail?.body.replace("Prospect Business", lead.business_name) ||
+        `Hi,\n\nI noticed ${lead.business_name} does not have a website...`;
+      
+      const fallbackDrafts: LeadOutreachDrafts = {
+        email_subject: fallbackSubject,
+        email_body: fallbackBody,
+        social_dm_body: `Hi ${lead.business_name} team,\n\nI noticed you have an active page here but no main website yet...`,
+        sms_whatsapp_body: `Hi, this is ${senderName} from ${senderCompany}. I saw ${lead.business_name} online and wanted to ask if you'd be open to a website proposal?`,
+        call_script_body: `Pitch: Hi, I'm calling from ${senderCompany} regarding setting up a website for ${lead.business_name}...`,
+      };
+
+      setCustomOutreach(fallbackDrafts);
+      setEditedEmailSubject(fallbackDrafts.email_subject || "");
+      setEditedEmailBody(fallbackDrafts.email_body || "");
+      setEditedSocialDM(fallbackDrafts.social_dm_body || "");
+      setEditedSMS(fallbackDrafts.sms_whatsapp_body || "");
+      setEditedScript(fallbackDrafts.call_script_body || "");
+      setActiveTab("email");
+    } finally {
+      setIsCustomOutreachLoading(false);
+    }
+  };
+
   const handleCopy = () => {
-    if (result) {
-      navigator.clipboard.writeText(
-        `Subject: ${result.draft_email.subject}\n\n${result.draft_email.body}`
-      );
+    let textToCopy = "";
+    if (activeTab === "email") {
+      textToCopy = `Subject: ${editedEmailSubject}\n\n${editedEmailBody}`;
+    } else if (activeTab === "social_dm") {
+      textToCopy = editedSocialDM;
+    } else if (activeTab === "sms_whatsapp") {
+      textToCopy = editedSMS;
+    } else {
+      textToCopy = editedScript;
+    }
+
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
   };
 
+  // Clean phone number for WhatsApp direct linking
+  const cleanPhoneForWa = (p: string) => {
+    return p.replace(/\D/g, "");
+  };
+
+  // Filter leads based on toggle
+  const displayedLeads = leads.filter((lead) => !filterNoWebsite || !lead.has_website);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
-        
-        {/* Header Hero Section */}
-        <Box sx={{ bgcolor: "background.paper", borderBottom: 1, borderColor: "divider", py: 5 }}>
-          <Container maxWidth="lg">
-            <Grid container spacing={4} sx={{ alignItems: "center" }}>
-              <Grid size={{ xs: 12, md: 5 }}>
-                <Typography variant="overline" color="primary" sx={{ fontWeight: "bold", tracking: 1.5 }}>
-                  LINEARAI SERVICE LINE
-                </Typography>
-                <Typography variant="h4" component="h1" sx={{ mt: 1, mb: 2, color: "text.primary" }}>
-                  Sales Lead Research Agent
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
-                  Research a prospect company, generate real-time web evidence profiles, and draft highly personalized cold emails verified for factual claims.
-                </Typography>
-              </Grid>
-              
-              {/* Form Card */}
-              <Grid size={{ xs: 12, md: 7 }}>
-                <Paper variant="outlined" sx={{ p: 3, borderRadius: 3, bgcolor: "background.paper" }}>
-                  <form onSubmit={runPipeline}>
-                    <Grid container spacing={3}>
+      <Box
+        sx={{
+          minHeight: "100vh",
+          bgcolor: "background.default",
+          backgroundImage:
+            "radial-gradient(ellipse at 50% -20%, rgba(14, 165, 233, 0.15), rgba(255, 255, 255, 0))",
+          py: 4,
+        }}
+      >
+        <Container maxWidth="xl">
+          {/* Header Panel */}
+          <Box sx={{ mb: 4, textAlign: "center" }}>
+            <Typography
+              variant="overline"
+              color="primary.main"
+              sx={{ fontWeight: 800, tracking: 2, display: "inline-block", mb: 1 }}
+            >
+              LINEARAI LEAD RESEARCHER
+            </Typography>
+            <Typography variant="h4" component="h1" sx={{ mb: 1, fontWeight: 900 }}>
+              Find Offline Businesses & <span style={{ color: "#0ea5e9" }}>Contact Them Instantly</span>
+            </Typography>
+            <Typography variant="body1" color="text.secondary" sx={{ maxWidth: 700, mx: "auto" }}>
+              Locate businesses without websites, extract emails, social pages, or phone numbers, and
+              generate custom messages for WhatsApp, DMs, or phone scripts in one click.
+            </Typography>
+          </Box>
+
+          <Grid container spacing={3}>
+            {/* Left: Input Form Panel */}
+            <Grid size={{ xs: 12, md: 4 }}>
+              <Card sx={{ mb: 3 }}>
+                <CardContent sx={{ p: 3 }}>
+                  <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
+                    <SearchIcon color="primary" sx={{ mr: 1 }} />
+                    <Typography variant="h6">Search Parameters</Typography>
+                  </Box>
+                  <form onSubmit={runSearch}>
+                    <Grid container spacing={2.5}>
                       <Grid size={12}>
                         <TextField
                           fullWidth
-                          label="Company Name or Website"
-                          value={companyInput}
-                          onChange={(e) => setCompanyInput(e.target.value)}
-                          placeholder="e.g. OpenAI or openai.com"
+                          label="Business Category"
+                          value={category}
+                          onChange={(e) => setCategory(e.target.value)}
+                          placeholder="e.g. Salons, Tutoring Centers, Bakeries"
+                          required
+                          variant="outlined"
+                          size="small"
+                        />
+                        <Box sx={{ mt: 1, display: "flex", flexWrap: "wrap", gap: 0.8 }}>
+                          {SUGGESTIONS.map((sug) => (
+                            <Chip
+                              key={sug}
+                              label={sug}
+                              size="small"
+                              onClick={() => setCategory(sug)}
+                              variant={category.toLowerCase() === sug.toLowerCase() ? "filled" : "outlined"}
+                              color={category.toLowerCase() === sug.toLowerCase() ? "primary" : "default"}
+                              sx={{ cursor: "pointer", fontSize: "0.75rem" }}
+                            />
+                          ))}
+                        </Box>
+                      </Grid>
+                      <Grid size={12}>
+                        <TextField
+                          fullWidth
+                          label="Location (City / Area)"
+                          value={location}
+                          onChange={(e) => setLocation(e.target.value)}
+                          placeholder="e.g. Dhaka, London, Paris"
                           required
                           variant="outlined"
                           size="small"
                         />
                       </Grid>
+
+                      {/* Outreach Settings Collapsible */}
                       <Grid size={12}>
-                        <TextField
-                          fullWidth
-                          multiline
-                          rows={3}
-                          label="Product or Value Proposition"
-                          value={productDescription}
-                          onChange={(e) => setProductDescription(e.target.value)}
-                          placeholder="e.g. We build custom agentic AI systems for sales and operations teams."
-                          required
-                          variant="outlined"
-                        />
+                        <Accordion
+                          disableGutters
+                          sx={{
+                            bgcolor: "rgba(15, 23, 42, 0.4)",
+                            border: "1px solid rgba(255, 255, 255, 0.05)",
+                            borderRadius: "10px !important",
+                            boxShadow: "none",
+                            "&:before": { display: "none" },
+                          }}
+                        >
+                          <AccordionSummary expandIcon={<ExpandMoreIcon color="primary" />}>
+                            <Box sx={{ display: "flex", alignItems: "center" }}>
+                              <SettingsIcon fontSize="small" color="primary" sx={{ mr: 1 }} />
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                Outreach Signature & Service Info
+                              </Typography>
+                            </Box>
+                          </AccordionSummary>
+                          <AccordionDetails sx={{ p: 2, pt: 0 }}>
+                            <Grid container spacing={2}>
+                              <Grid size={6}>
+                                <TextField
+                                  fullWidth
+                                  label="Your Name"
+                                  value={senderName}
+                                  onChange={(e) => setSenderName(e.target.value)}
+                                  variant="outlined"
+                                  size="small"
+                                />
+                              </Grid>
+                              <Grid size={6}>
+                                <TextField
+                                  fullWidth
+                                  label="Your Company"
+                                  value={senderCompany}
+                                  onChange={(e) => setSenderCompany(e.target.value)}
+                                  variant="outlined"
+                                  size="small"
+                                />
+                              </Grid>
+                              <Grid size={12}>
+                                <TextField
+                                  fullWidth
+                                  multiline
+                                  rows={3}
+                                  label="Service Offer Description"
+                                  value={serviceDesc}
+                                  onChange={(e) => setServiceDesc(e.target.value)}
+                                  placeholder="What value do you offer local businesses?"
+                                  variant="outlined"
+                                  size="small"
+                                />
+                              </Grid>
+                            </Grid>
+                          </AccordionDetails>
+                        </Accordion>
                       </Grid>
+
                       <Grid size={12}>
                         <Button
                           fullWidth
@@ -234,330 +507,462 @@ export default function Home() {
                           color="primary"
                           disabled={isLoading}
                           startIcon={isLoading ? <CircularProgress size={20} color="inherit" /> : <SearchIcon />}
-                          sx={{ height: 44 }}
+                          sx={{ height: 46 }}
                         >
-                          {isLoading ? "Running Research Pipeline..." : "Run Research & Outreach"}
+                          {isLoading ? "Scraping & Researching..." : "Scan & Discover Leads"}
                         </Button>
                       </Grid>
                     </Grid>
                   </form>
-                </Paper>
-              </Grid>
+                </CardContent>
+              </Card>
+
+              {/* Stats Panel */}
+              {leads.length > 0 && (
+                <Card sx={{ borderLeft: 4, borderLeftColor: "primary.main" }}>
+                  <CardContent sx={{ p: 2.5 }}>
+                    <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5, fontWeight: 700 }}>
+                      DISCOVERY METRICS
+                    </Typography>
+                    <Grid container spacing={2}>
+                      <Grid size={6} sx={{ textAlign: "center" }}>
+                        <Typography variant="h5" color="text.primary" sx={{ fontWeight: 800 }}>
+                          {leads.length}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Total Identified
+                        </Typography>
+                      </Grid>
+                      <Grid size={6} sx={{ textAlign: "center" }}>
+                        <Typography variant="h5" color="error.main" sx={{ fontWeight: 800 }}>
+                          {leads.filter((l) => !l.has_website).length}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          No Standalone Site
+                        </Typography>
+                      </Grid>
+                    </Grid>
+                  </CardContent>
+                </Card>
+              )}
             </Grid>
-          </Container>
-        </Box>
 
-        {/* Results / Feedback Section */}
-        <Container maxWidth="lg" sx={{ py: 4 }}>
-          {error && (
-            <Alert severity="error" variant="outlined" sx={{ mb: 4, borderRadius: 2 }}>
-              {error}
-            </Alert>
-          )}
+            {/* Middle: Discovered Leads Table/List */}
+            <Grid size={{ xs: 12, md: 5 }}>
+              <Card sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+                <CardContent sx={{ p: 3, flexGrow: 1, display: "flex", flexDirection: "column", minHeight: 400 }}>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      mb: 2,
+                    }}
+                  >
+                    <Box sx={{ display: "flex", alignItems: "center" }}>
+                      <BusinessIcon color="primary" sx={{ mr: 1 }} />
+                      <Typography variant="h6">Discovered Leads</Typography>
+                    </Box>
 
-          {result && (
-            <Grid container spacing={3}>
-              
-              {/* Left Column: Company Profile & news */}
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Grid container spacing={3}>
-                  
-                  {/* Profile Metadata */}
-                  <Grid size={12}>
-                    <Card variant="outlined">
-                      <CardContent>
-                        <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
-                          <BusinessIcon color="primary" sx={{ mr: 1 }} />
-                          <Typography variant="h6">Company Profile</Typography>
-                        </Box>
-                        <Divider sx={{ mb: 2 }} />
-                        <Grid container spacing={2}>
-                          <Grid size={12} sx={{ display: "flex", alignItems: "center" }}>
-                            <Typography sx={{ fontWeight: 600, minWidth: 100 }} variant="body2" color="text.secondary">Name:</Typography>
-                            <Typography variant="body2">{result.profile.company_name}</Typography>
-                          </Grid>
-                          <Grid size={12} sx={{ display: "flex", alignItems: "center" }}>
-                            <Typography sx={{ fontWeight: 600, minWidth: 100 }} variant="body2" color="text.secondary">Website:</Typography>
-                            {result.profile.website ? (
-                              <Button
-                                href={result.profile.website}
-                                target="_blank"
-                                size="small"
-                                variant="text"
-                                color="primary"
-                                startIcon={<LanguageIcon fontSize="small" />}
-                                endIcon={<OpenInNewIcon fontSize="small" />}
-                                sx={{ p: 0, textTransform: "none", minWidth: 0 }}
-                              >
-                                {result.profile.website.replace("https://", "").replace("http://", "")}
-                              </Button>
-                            ) : (
-                              <Typography variant="body2" color="text.secondary">No data found</Typography>
-                            )}
-                          </Grid>
-                          <Grid size={12} sx={{ display: "flex", alignItems: "center" }}>
-                            <Typography sx={{ fontWeight: 600, minWidth: 100 }} variant="body2" color="text.secondary">HQ Location:</Typography>
-                            <Typography variant="body2" sx={{ display: "flex", alignItems: "center" }}>
-                              <PlaceIcon sx={{ fontSize: 16, mr: 0.5, color: "text.secondary" }} />
-                              {result.profile.hq_location ?? "No data found"}
-                            </Typography>
-                          </Grid>
-                          <Grid size={12} sx={{ display: "flex", alignItems: "center" }}>
-                            <Typography sx={{ fontWeight: 600, minWidth: 100 }} variant="body2" color="text.secondary">Size Est.:</Typography>
-                            <Typography variant="body2" sx={{ display: "flex", alignItems: "center" }}>
-                              <PeopleIcon sx={{ fontSize: 16, mr: 0.5, color: "text.secondary" }} />
-                              {result.profile.company_size_estimate ?? "No data found"}
-                            </Typography>
-                          </Grid>
-                        </Grid>
+                    {leads.length > 0 && (
+                      <Chip
+                        icon={<FilterIcon sx={{ fontSize: "14px !important" }} />}
+                        label="No Website Only"
+                        onClick={() => setFilterNoWebsite(!filterNoWebsite)}
+                        color={filterNoWebsite ? "primary" : "default"}
+                        variant={filterNoWebsite ? "filled" : "outlined"}
+                        size="small"
+                        sx={{ cursor: "pointer" }}
+                      />
+                    )}
+                  </Box>
+                  <Divider sx={{ mb: 2, borderColor: "rgba(255,255,255,0.06)" }} />
 
-                        {result.profile.insufficient_evidence.length > 0 && (
-                          <Box sx={{ mt: 3, p: 1.5, borderRadius: 2, bgcolor: "#fff3f1", border: "1px solid #ffe3df" }}>
-                            <Typography variant="caption" color="secondary.main" sx={{ display: "block", fontWeight: 600 }}>
-                              Missing Web Evidence for: {result.profile.insufficient_evidence.join(", ")}
-                            </Typography>
-                          </Box>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </Grid>
+                  {isLoading ? (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexGrow: 1,
+                        py: 8,
+                      }}
+                    >
+                      <CircularProgress size={45} sx={{ mb: 2 }} />
+                      <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
+                        Scraping local directory data & business phone lines...
+                      </Typography>
+                      <Typography variant="caption" color="primary.main" sx={{ mt: 0.5 }}>
+                        Analyzing domains & checking server response headers
+                      </Typography>
+                    </Box>
+                  ) : leads.length === 0 ? (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexGrow: 1,
+                        py: 8,
+                        textAlign: "center",
+                      }}
+                    >
+                      <HelpIcon sx={{ fontSize: 48, color: "rgba(255,255,255,0.1)", mb: 1.5 }} />
+                      <Typography variant="body2" color="text.secondary">
+                        Enter details on the left and scan to start researching.
+                      </Typography>
+                    </Box>
+                  ) : displayedLeads.length === 0 ? (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexGrow: 1,
+                        py: 8,
+                        textAlign: "center",
+                      }}
+                    >
+                      <CheckCircleIcon color="success" sx={{ fontSize: 40, mb: 1 }} />
+                      <Typography variant="body2" color="text.secondary">
+                        Awesome! All found businesses have an active standalone website.
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <List sx={{ overflowY: "auto", maxHeight: 650, flexGrow: 1, pr: 1 }} disablePadding>
+                      {displayedLeads.map((lead, idx) => {
+                        const isSelected = selectedLead?.business_name === lead.business_name;
+                        return (
+                          <Paper
+                            key={idx}
+                            variant="outlined"
+                            onClick={() => selectLead(lead)}
+                            sx={{
+                              p: 2,
+                              mb: 1.8,
+                              cursor: "pointer",
+                              borderRadius: 3,
+                              borderColor: isSelected
+                                ? "primary.main"
+                                : "rgba(255, 255, 255, 0.05)",
+                              bgcolor: isSelected
+                                ? "rgba(14, 165, 233, 0.08)"
+                                : "rgba(11, 21, 40, 0.4)",
+                              transition: "all 0.2s ease-in-out",
+                              "&:hover": {
+                                borderColor: isSelected ? "primary.main" : "rgba(255, 255, 255, 0.15)",
+                                bgcolor: isSelected
+                                  ? "rgba(14, 165, 233, 0.12)"
+                                  : "rgba(15, 23, 42, 0.8)",
+                              },
+                            }}
+                          >
+                            <Box sx={{ display: "flex", justifyContent: "space-between", mb: 1 }}>
+                              <Typography variant="subtitle1" sx={{ fontWeight: 700, pr: 1 }}>
+                                {lead.business_name}
+                              </Typography>
+                              <Box>
+                                {lead.has_website ? (
+                                  <Chip
+                                    label="Has Website"
+                                    color="success"
+                                    size="small"
+                                    sx={{ height: 20, fontSize: "0.65rem", fontWeight: "bold" }}
+                                  />
+                                ) : lead.has_social_media ? (
+                                  <Chip
+                                    label="Social Page Only"
+                                    color="warning"
+                                    size="small"
+                                    sx={{ height: 20, fontSize: "0.65rem", fontWeight: "bold" }}
+                                  />
+                                ) : (
+                                  <Chip
+                                    label="No Website"
+                                    color="error"
+                                    size="small"
+                                    sx={{ height: 20, fontSize: "0.65rem", fontWeight: "bold" }}
+                                  />
+                                )}
+                              </Box>
+                            </Box>
 
-                  {/* Recent News */}
-                  <Grid size={12}>
-                    <Card variant="outlined">
-                      <CardContent>
-                        <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
-                          <ArticleIcon color="primary" sx={{ mr: 1 }} />
-                          <Typography variant="h6">Recent News</Typography>
-                        </Box>
-                        <Divider sx={{ mb: 2 }} />
-                        {result.profile.recent_news.length > 0 ? (
-                          <List disablePadding>
-                            {result.profile.recent_news.map((item, idx) => (
-                              <Box key={idx} sx={{ mb: idx !== result.profile.recent_news.length - 1 ? 2 : 0 }}>
-                                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                                  {item.headline}
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontSize: "0.85rem" }}>
-                                  {item.summary}
-                                </Typography>
+                            <Grid container spacing={1} sx={{ mt: 0.5 }}>
+                              {lead.address && (
+                                <Grid size={12} sx={{ display: "flex", alignItems: "center" }}>
+                                  <PlaceIcon sx={{ fontSize: 14, mr: 0.8, color: "text.secondary" }} />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {lead.address}
+                                  </Typography>
+                                </Grid>
+                              )}
+                              {lead.phone && (
+                                <Grid size={6} sx={{ display: "flex", alignItems: "center" }}>
+                                  <PhoneIcon sx={{ fontSize: 14, mr: 0.8, color: "text.secondary" }} />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {lead.phone}
+                                  </Typography>
+                                </Grid>
+                              )}
+                              {lead.email && (
+                                <Grid size={6} sx={{ display: "flex", alignItems: "center" }}>
+                                  <MailIcon sx={{ fontSize: 14, mr: 0.8, color: "text.secondary" }} />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {lead.email}
+                                  </Typography>
+                                </Grid>
+                              )}
+                            </Grid>
+
+                            {/* Direct Call / Contact Actions */}
+                            <Box sx={{ mt: 1.5, display: "flex", flexWrap: "wrap", gap: 0.8 }}>
+                              {lead.google_maps_url && (
                                 <Button
-                                  href={item.source_url}
+                                  href={lead.google_maps_url}
                                   target="_blank"
                                   size="small"
+                                  variant="text"
                                   color="primary"
-                                  endIcon={<OpenInNewIcon sx={{ fontSize: 12 }} />}
-                                  sx={{ p: 0, textTransform: "none", fontSize: "0.75rem" }}
+                                  startIcon={<OpenInNewIcon sx={{ fontSize: 12 }} />}
+                                  sx={{ p: 0, minWidth: 0, height: "auto", fontSize: "0.7rem", mr: 2 }}
                                 >
-                                  View Article Source
+                                  Maps
                                 </Button>
-                                {idx !== result.profile.recent_news.length - 1 && <Divider sx={{ mt: 2 }} />}
-                              </Box>
-                            ))}
-                          </List>
-                        ) : (
-                          <Typography variant="body2" color="text.secondary">No news found in last 6 months</Typography>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-              </Grid>
+                              )}
 
-              {/* Right Column: Verified Outreach Email & Verification Pass */}
-              <Grid size={{ xs: 12, md: 6 }}>
-                <Grid container spacing={3}>
-
-                  {/* Outreach Email Draft */}
-                  <Grid size={12}>
-                    <Card variant="outlined" sx={{ borderLeft: 5, borderLeftColor: "primary.main" }}>
-                      <CardContent>
-                        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
-                          <Box sx={{ display: "flex", alignItems: "center" }}>
-                            <EmailIcon color="primary" sx={{ mr: 1 }} />
-                            <Typography variant="h6">Verified Outreach Draft</Typography>
-                          </Box>
-                          <Tooltip title={copied ? "Copied!" : "Copy to Clipboard"}>
-                            <IconButton onClick={handleCopy} color="primary" size="small">
-                              <ContentCopyIcon />
-                            </IconButton>
-                          </Tooltip>
-                        </Box>
-                        <Divider sx={{ mb: 2 }} />
-                        
-                        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-                          Subject: {result.draft_email.subject}
-                        </Typography>
-                        <Paper
-                          variant="outlined"
-                          sx={{
-                            p: 2,
-                            borderRadius: 2,
-                            bgcolor: "background.default",
-                            whiteSpace: "pre-wrap",
-                            fontFamily: "monospace",
-                            fontSize: "0.875rem",
-                            lineHeight: 1.6,
-                            color: "text.primary"
-                          }}
-                        >
-                          {result.draft_email.body}
-                        </Paper>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-
-                  {/* Verification Report */}
-                  <Grid size={12}>
-                    <Card variant="outlined">
-                      <CardContent>
-                        <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
-                          <CheckCircleIcon color="primary" sx={{ mr: 1 }} />
-                          <Typography variant="h6">Claims Verification Report</Typography>
-                        </Box>
-                        <Divider sx={{ mb: 2 }} />
-                        {result.verification_report.length > 0 ? (
-                          <List disablePadding>
-                            {result.verification_report.map((item, idx) => (
-                              <ListItem key={idx} disableGutters sx={{ alignItems: "flex-start", flexDirection: "column", mb: 2 }}>
-                                <Box sx={{ display: "flex", alignItems: "center", width: "100%", mb: 1 }}>
-                                  {item.status === "verified" ? (
-                                    <Chip
-                                      icon={<CheckCircleIcon sx={{ fontSize: "14px !important" }} />}
-                                      label="VERIFIED"
-                                      color="success"
-                                      size="small"
-                                      sx={{ fontWeight: "bold", height: 20 }}
-                                    />
-                                  ) : item.status === "unverified" ? (
-                                    <Chip
-                                      icon={<WarningIcon sx={{ fontSize: "14px !important" }} />}
-                                      label="UNVERIFIED"
-                                      color="error"
-                                      size="small"
-                                      sx={{ fontWeight: "bold", height: 20 }}
-                                    />
-                                  ) : (
-                                    <Chip
-                                      icon={<HelpIcon sx={{ fontSize: "14px !important" }} />}
-                                      label="NON-FACTUAL CLAIM"
-                                      color="default"
-                                      size="small"
-                                      sx={{ fontWeight: "bold", height: 20 }}
-                                    />
-                                  )}
-                                  <Typography variant="caption" sx={{ ml: 1, color: "text.secondary", fontWeight: 500 }}>
-                                    Confidence: {Math.round(item.confidence * 100)}%
-                                  </Typography>
-                                </Box>
-                                <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.5 }}>
-                                  "{item.claim}"
-                                </Typography>
-                                {item.evidence_ref && (
+                              {lead.phone && (
+                                <>
                                   <Button
-                                    href={item.evidence_ref}
+                                    href={`tel:${lead.phone}`}
+                                    size="small"
+                                    variant="outlined"
+                                    color="primary"
+                                    startIcon={<CallIcon sx={{ fontSize: 12 }} />}
+                                    sx={{ height: 24, fontSize: "0.68rem", px: 1 }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    Call
+                                  </Button>
+
+                                  <Button
+                                    href={`https://wa.me/${cleanPhoneForWa(lead.phone)}?text=${encodeURIComponent(
+                                      editedSMS || `Hi, I saw your page for ${lead.business_name}...`
+                                    )}`}
                                     target="_blank"
                                     size="small"
-                                    endIcon={<OpenInNewIcon sx={{ fontSize: 10 }} />}
-                                    sx={{ p: 0, textTransform: "none", fontSize: "0.75rem", minHeight: 0, mt: 0.5 }}
+                                    variant="outlined"
+                                    color="secondary"
+                                    startIcon={<MessageIcon sx={{ fontSize: 12 }} />}
+                                    sx={{ height: 24, fontSize: "0.68rem", px: 1 }}
+                                    onClick={(e) => e.stopPropagation()}
                                   >
-                                    Evidence: {item.evidence_ref.slice(0, 50)}...
+                                    WhatsApp
                                   </Button>
-                                )}
-                              </ListItem>
-                            ))}
-                          </List>
-                        ) : (
-                          <Typography variant="body2" color="text.secondary">No factual claims found in email draft</Typography>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-              </Grid>
+                                </>
+                              )}
 
-              {/* Lower Section: Pain Points & Full Evidence List */}
-              <Grid size={12}>
-                <Grid container spacing={3}>
-                  
-                  {/* Pain Signals */}
-                  <Grid size={{ xs: 12, md: 6 }}>
-                    <Card variant="outlined">
-                      <CardContent>
-                        <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
-                          <WarningIcon color="warning" sx={{ mr: 1 }} />
-                          <Typography variant="h6">Retrieved Pain Signals</Typography>
-                        </Box>
-                        <Divider sx={{ mb: 2 }} />
-                        {result.profile.pain_point_signals.length > 0 ? (
-                          <List>
-                            {result.profile.pain_point_signals.map((signal, idx) => (
-                              <ListItem key={idx} disableGutters>
-                                <ListItemIcon sx={{ minWidth: 32 }}>
-                                  <Chip label={idx + 1} size="small" variant="outlined" color="primary" sx={{ height: 20, width: 20, p: 0, "& .MuiChip-label": { p: 0 } }} />
-                                </ListItemIcon>
-                                <ListItemText primary={<Typography variant="body2">{signal}</Typography>} />
-                              </ListItem>
-                            ))}
-                          </List>
-                        ) : (
-                          <Typography variant="body2" color="text.secondary">No signals found</Typography>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </Grid>
-
-                  {/* All Evidence Sources */}
-                  <Grid size={{ xs: 12, md: 6 }}>
-                    <Card variant="outlined">
-                      <CardContent>
-                        <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
-                          <LanguageIcon color="primary" sx={{ mr: 1 }} />
-                          <Typography variant="h6">Evidence Source Registry</Typography>
-                        </Box>
-                        <Divider sx={{ mb: 2 }} />
-                        {result.profile.evidence_sources.length > 0 ? (
-                          <List disablePadding>
-                            {result.profile.evidence_sources.map((source, idx) => (
-                              <ListItem key={idx} disableGutters sx={{ py: 1, borderBottom: idx !== result.profile.evidence_sources.length - 1 ? "1px solid #e2e8f0" : "none" }}>
-                                <Box sx={{ width: "100%" }}>
-                                  <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.5 }}>
-                                    <Chip
-                                      label={`Relevance: ${Math.round(source.relevance_score * 100)}%`}
-                                      size="small"
-                                      color={source.relevance_score >= 0.6 ? "primary" : "default"}
-                                      variant="outlined"
-                                      sx={{ height: 18, fontSize: "0.7rem", fontWeight: "bold" }}
-                                    />
-                                    <Button
-                                      href={source.url}
-                                      target="_blank"
-                                      size="small"
-                                      endIcon={<OpenInNewIcon sx={{ fontSize: 10 }} />}
-                                      sx={{ p: 0, textTransform: "none", fontSize: "0.75rem", minWidth: 0 }}
-                                    >
-                                      Go to Source URL
-                                    </Button>
-                                  </Box>
-                                  <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.8rem", mt: 0.5 }}>
-                                    {source.used_for_claim}
-                                  </Typography>
-                                </Box>
-                              </ListItem>
-                            ))}
-                          </List>
-                        ) : (
-                          <Typography variant="body2" color="text.secondary">No evidence sources registered</Typography>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </Grid>
-
-                </Grid>
-              </Grid>
-
+                              {lead.social_links && lead.social_links.length > 0 && (
+                                <Button
+                                  href={lead.social_links[0]}
+                                  target="_blank"
+                                  size="small"
+                                  variant="outlined"
+                                  color="warning"
+                                  startIcon={<LanguageIcon sx={{ fontSize: 12 }} />}
+                                  sx={{ height: 24, fontSize: "0.68rem", px: 1 }}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  Social Page
+                                </Button>
+                              )}
+                            </Box>
+                          </Paper>
+                        );
+                      })}
+                    </List>
+                  )}
+                </CardContent>
+              </Card>
             </Grid>
-          )}
+
+            {/* Right: AI Outreach Editor (Multi-channel) */}
+            <Grid size={{ xs: 12, md: 3 }}>
+              <Card sx={{ height: "100%", borderLeft: 5, borderLeftColor: "primary.main" }}>
+                <CardContent sx={{ p: 3, display: "flex", flexDirection: "column", height: "100%" }}>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      mb: 1.5,
+                    }}
+                  >
+                    <Box sx={{ display: "flex", alignItems: "center" }}>
+                      <EmailIcon color="primary" sx={{ mr: 1 }} />
+                      <Typography variant="h6">Outreach Pitch</Typography>
+                    </Box>
+
+                    {customOutreach && !isCustomOutreachLoading && (
+                      <Tooltip title={copied ? "Copied!" : "Copy to Clipboard"}>
+                        <IconButton onClick={handleCopy} color="primary" size="small">
+                          {copied ? <CheckIcon /> : <ContentCopyIcon />}
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </Box>
+
+                  {/* Channel Tab selector */}
+                  {selectedLead && (
+                    <Box sx={{ mb: 2 }}>
+                      <ButtonGroup size="small" fullWidth color="primary" variant="outlined">
+                        <Button
+                          onClick={() => setActiveTab("email")}
+                          variant={activeTab === "email" ? "contained" : "outlined"}
+                          sx={{ fontSize: "0.75rem", p: "4px 8px" }}
+                          disabled={!selectedLead.email && !customOutreach?.email_body}
+                        >
+                          Email
+                        </Button>
+                        <Button
+                          onClick={() => setActiveTab("social_dm")}
+                          variant={activeTab === "social_dm" ? "contained" : "outlined"}
+                          sx={{ fontSize: "0.75rem", p: "4px 8px" }}
+                          disabled={!selectedLead.has_social_media && !customOutreach?.social_dm_body}
+                        >
+                          DM
+                        </Button>
+                        <Button
+                          onClick={() => setActiveTab("sms_whatsapp")}
+                          variant={activeTab === "sms_whatsapp" ? "contained" : "outlined"}
+                          sx={{ fontSize: "0.75rem", p: "4px 8px" }}
+                          disabled={!selectedLead.phone && !customOutreach?.sms_whatsapp_body}
+                        >
+                          WhatsApp
+                        </Button>
+                        <Button
+                          onClick={() => setActiveTab("call_script")}
+                          variant={activeTab === "call_script" ? "contained" : "outlined"}
+                          sx={{ fontSize: "0.75rem", p: "4px 8px" }}
+                          disabled={!selectedLead.phone && !customOutreach?.call_script_body}
+                        >
+                          Call Script
+                        </Button>
+                      </ButtonGroup>
+                    </Box>
+                  )}
+
+                  <Divider sx={{ mb: 2, borderColor: "rgba(255,255,255,0.06)" }} />
+
+                  {isCustomOutreachLoading ? (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexGrow: 1,
+                        py: 8,
+                      }}
+                    >
+                      <CircularProgress size={35} sx={{ mb: 2 }} />
+                      <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
+                        Generating personalized pitches for all contact channels...
+                      </Typography>
+                    </Box>
+                  ) : !selectedLead ? (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexGrow: 1,
+                        py: 8,
+                        textAlign: "center",
+                      }}
+                    >
+                      <MagicIcon sx={{ fontSize: 40, color: "rgba(255,255,255,0.1)", mb: 1 }} />
+                      <Typography variant="body2" color="text.secondary">
+                        Select a lead to review custom outreach drafts.
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <Typography variant="caption" color="text.secondary">
+                        COMPOSED FOR: <strong>{selectedLead.business_name}</strong>
+                      </Typography>
+
+                      {activeTab === "email" && (
+                        <TextField
+                          fullWidth
+                          label="Email Subject"
+                          value={editedEmailSubject}
+                          onChange={(e) => setEditedEmailSubject(e.target.value)}
+                          variant="outlined"
+                          size="small"
+                        />
+                      )}
+
+                      <TextField
+                        fullWidth
+                        multiline
+                        rows={14}
+                        label={
+                          activeTab === "email"
+                            ? "Email Body"
+                            : activeTab === "social_dm"
+                            ? "Social Direct Message"
+                            : activeTab === "sms_whatsapp"
+                            ? "WhatsApp/SMS Text"
+                            : "Phone Pitch Script"
+                        }
+                        value={
+                          activeTab === "email"
+                            ? editedEmailBody
+                            : activeTab === "social_dm"
+                            ? editedSocialDM
+                            : activeTab === "sms_whatsapp"
+                            ? editedSMS
+                            : editedScript
+                        }
+                        onChange={(e) => {
+                          if (activeTab === "email") setEditedEmailBody(e.target.value);
+                          else if (activeTab === "social_dm") setEditedSocialDM(e.target.value);
+                          else if (activeTab === "sms_whatsapp") setEditedSMS(e.target.value);
+                          else setEditedScript(e.target.value);
+                        }}
+                        variant="outlined"
+                        sx={{
+                          "& .MuiOutlinedInput-root": {
+                            fontFamily: "monospace",
+                            fontSize: "0.85rem",
+                            lineHeight: 1.5,
+                          },
+                        }}
+                      />
+
+                      <Button
+                        fullWidth
+                        variant="contained"
+                        color="primary"
+                        onClick={handleCopy}
+                        startIcon={copied ? <CheckIcon /> : <ContentCopyIcon />}
+                      >
+                        {copied
+                          ? "Copied to Clipboard!"
+                          : activeTab === "email"
+                          ? "Copy Subject & Body"
+                          : "Copy Pitch"}
+                      </Button>
+                    </Box>
+                  )}
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
         </Container>
       </Box>
     </ThemeProvider>
