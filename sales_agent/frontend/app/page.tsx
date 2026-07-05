@@ -187,8 +187,8 @@ const SUGGESTIONS = ["Beauty Salons", "Tutoring Centers", "Gyms", "Cafes", "Dent
 export default function Home() {
   const [category, setCategory] = useState("Beauty Salons");
   const [location, setLocation] = useState("Dhaka");
-  const [senderName, setSenderName] = useState("Fahim");
-  const [senderCompany, setSenderCompany] = useState("Aether Web Agency");
+  const [senderName, setSenderName] = useState("");
+  const [senderCompany, setSenderCompany] = useState("");
   const [serviceDesc, setServiceDesc] = useState(
     "We design stunning, high-converting websites optimized for local search and mobile, helping small businesses double their client bookings."
   );
@@ -749,7 +749,11 @@ export default function Home() {
 
                                   <Button
                                     href={`https://wa.me/${cleanPhoneForWa(lead.phone)}?text=${encodeURIComponent(
-                                      editedSMS || `Hi, I saw your page for ${lead.business_name}...`
+                                      // Use draft from the currently-selected lead if available,
+                                      // otherwise build a quick generic message so the link is never empty.
+                                      (selectedLead?.business_name === lead.business_name && editedSMS)
+                                        ? editedSMS
+                                        : `Hi, I came across ${lead.business_name} and wanted to reach out about building a professional website for your business. Would you be open to a quick chat?`
                                     )}`}
                                     target="_blank"
                                     size="small"

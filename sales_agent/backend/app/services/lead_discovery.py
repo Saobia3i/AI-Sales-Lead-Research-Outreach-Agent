@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field
@@ -14,6 +15,9 @@ from app.schemas import LeadBusiness, LeadDraftEmail, LeadSearchRequest, LeadSea
 logger = logging.getLogger(__name__)
 search_provider = DDGSSearchProvider()
 
+# ---------------------------------------------------------------------------
+# Internal structured output models (not exposed via API)
+# ---------------------------------------------------------------------------
 
 class ExtractedBusiness(BaseModel):
     business_name: str
@@ -37,254 +41,383 @@ class WebsiteVerification(BaseModel):
     confidence: float
 
 
+class LLMOutreachDrafts(BaseModel):
+    email_subject: str
+    email_body: str
+    social_dm_body: str
+    sms_whatsapp_body: str
+    call_script_body: str
+
+
+# ---------------------------------------------------------------------------
+# Directory / Social media blacklist
+# ---------------------------------------------------------------------------
+
+# These are NOT official business websites — do NOT count as "has a website"
+_DIRECTORY_DOMAINS: frozenset[str] = frozenset({
+    # Global social / video
+    "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
+    "youtube.com", "tiktok.com", "pinterest.com", "threads.net", "snapchat.com",
+    # Review & directory sites
+    "yelp.com", "tripadvisor.com", "yellowpages.com", "foursquare.com",
+    "groupon.com", "mapquest.com", "justdial.com", "zomato.com", "swiggy.com",
+    "foodpanda.com", "happycow.net",
+    # BD-specific listing sites
+    "bikroy.com", "shajgoj.com", "chaldal.com", "daraz.com.bd", "bdsaloons.com",
+    "bd-beauty.com", "bangladesh.local.com", "businesslistbd.com",
+    # Free website builders (not standalone business sites)
+    "wixsite.com", "wix.com", "blogspot.com", "wordpress.com",
+    "weebly.com", "squarespace.com", "webador.com", "site123.com",
+    # Aggregators / media
+    "bloomberg.com", "crunchbase.com", "github.com", "medium.com",
+    "lh3.googleusercontent.com", "maps.google.com", "google.com",
+    # Ecommerce platforms (not own website)
+    "amazon.com", "etsy.com", "shopee.com", "alibaba.com",
+})
+
+
 def _is_directory_or_social(url: str) -> bool:
+    """Returns True if the URL belongs to a known directory, social media, or listing site."""
     if not url:
         return False
-    parsed = urlparse(url.lower())
-    domain = parsed.netloc or parsed.path
-    domain = domain.removeprefix("www.")
-    
-    directories = {
-        "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "youtube.com",
-        "yelp.com", "tripadvisor.com", "yellowpages.com", "foursquare.com", "groupon.com",
-        "mapquest.com", "bloomberg.com", "crunchbase.com", "justdial.com", "foodpanda.com",
-        "daraz.com.bd", "wixsite.com", "blogspot.com", "wordpress.com", "tiktok.com",
-        "pinterest.com", "google.com", "maps.google.com", "bdsaloons.com", "lh3.googleusercontent.com",
-        "github.com", "medium.com", "threads.net"
-    }
-    
-    for d in directories:
-        if domain == d or domain.endswith("." + d):
-            return True
+    try:
+        parsed = urlparse(url.lower())
+        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        # Strip subdomains: e.g. "dhaka.yelp.com" -> matches "yelp.com"
+        for blocked in _DIRECTORY_DOMAINS:
+            if domain == blocked or domain.endswith("." + blocked):
+                return True
+    except Exception:
+        pass
     return False
 
 
+# ---------------------------------------------------------------------------
+# Website liveness checker
+# ---------------------------------------------------------------------------
+
 async def check_url_active(url: str) -> tuple[bool, str | None]:
-    """Attempts to reach the website. Returns (is_active, resolved_url)."""
+    """Attempts to reach the website. Returns (is_active, resolved_url).
+    Uses HEAD first (faster), falls back to GET, then tries HTTP if HTTPS fails.
+    """
     if not url:
         return False, None
-    
+
     normalized = url.strip()
     if not normalized.startswith(("http://", "https://")):
         normalized = "https://" + normalized
-        
+
     timeout = settings.website_check_timeout_seconds
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as client:
-            # Try HEAD first as it is faster
-            try:
-                response = await client.head(normalized)
-                if response.status_code < 400:
-                    return True, str(response.url)
-            except Exception:
-                pass
-            
-            # Fallback to GET
-            response = await client.get(normalized)
-            if response.status_code < 400:
-                return True, str(response.url)
-            return False, None
-    except Exception:
-        # If HTTPS failed, try HTTP just in case
-        if normalized.startswith("https://"):
-            http_version = normalized.replace("https://", "http://")
-            try:
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as client:
-                    response = await client.get(http_version)
-                    if response.status_code < 400:
-                        return True, str(response.url)
-            except Exception:
-                pass
+
+    async def _try(target: str) -> tuple[bool, str | None]:
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True, verify=False
+            ) as client:
+                try:
+                    r = await client.head(target)
+                    if r.status_code < 400:
+                        return True, str(r.url)
+                except Exception:
+                    pass
+                r = await client.get(target)
+                if r.status_code < 400:
+                    return True, str(r.url)
+        except Exception:
+            pass
         return False, None
 
+    is_active, resolved = await _try(normalized)
+    if is_active:
+        return True, resolved
+
+    # Retry with HTTP if HTTPS failed
+    if normalized.startswith("https://"):
+        is_active, resolved = await _try(normalized.replace("https://", "http://", 1))
+        if is_active:
+            return True, resolved
+
+    return False, None
+
+
+# ---------------------------------------------------------------------------
+# Website verification (search-based, used when no website URL was found)
+# ---------------------------------------------------------------------------
 
 async def verify_business_website(
-    business_name: str, 
-    location: str
+    business_name: str,
+    location: str,
 ) -> tuple[bool, str | None, float]:
-    """Performs a web search to check if the business has a website."""
-    query = f"{business_name} {location} official website contact"
+    """Search the web to check if a business has an official standalone website.
+
+    Returns:
+        (has_website, website_url, confidence)
+    """
+    query = f'"{business_name}" {location} official website'
     try:
         chunks = await search_provider.search(query, task="overview", max_results=4)
     except Exception:
         return False, None, 0.5
-    
+
     if not chunks:
-        return False, None, 0.8
-        
+        # No search results — we can't confirm but lean towards no website
+        return False, None, 0.75
+
     search_results_text = "\n".join(
         f"Title: {c.title}\nURL: {c.url}\nSnippet: {c.snippet}\n"
         for c in chunks
     )
-    
+
     system_prompt = (
-        "You are an expert lead verification assistant.\n"
-        "Given a business name, its location, and search results, determine if any search result is the official website.\n"
-        "Do NOT count social pages (Facebook, Instagram, LinkedIn, YouTube, TikTok) or directories (Yelp, Tripadvisor, Foursquare, YellowPages) as the official website.\n"
-        "If you find an official website, set has_website to true and official_website_url to the url. Otherwise, set has_website to false and official_website_url to null."
+        "You are a lead verification assistant.\n"
+        "Given a business name, its location, and web search results, decide if the business has "
+        "an official standalone website (not a social page or directory listing).\n"
+        "Rules:\n"
+        "- Do NOT count Facebook, Instagram, LinkedIn, YouTube, TikTok, or any social network as a website.\n"
+        "- Do NOT count Yelp, TripAdvisor, Foursquare, YellowPages, Zomato, Justdial or any listing directory.\n"
+        "- Only count a domain the business OWNS (e.g. mysalon.com, bestcafe.com.bd).\n"
+        "- If in doubt, set has_website to false.\n"
+        "Set confidence between 0.0 and 1.0 — higher when the result is clearly the business's own site."
     )
-    
+
     user_prompt = (
-        f"Business Name: {business_name}\n"
+        f"Business: {business_name}\n"
         f"Location: {location}\n\n"
         f"Search Results:\n{search_results_text}"
     )
-    
+
     try:
         verif = await llm_provider.structured(system_prompt, user_prompt, WebsiteVerification)
-        if verif and verif.has_website and verif.official_website_url:
-            # Verify if the website is actually a directory/social
-            if _is_directory_or_social(verif.official_website_url):
-                return False, None, 0.9
-            return True, verif.official_website_url, verif.confidence
-        return False, None, verif.confidence if verif else 0.7
-    except Exception:
-        # Fallback to simple check of search results
-        for c in chunks:
-            if not _is_directory_or_social(c.url):
-                # Simple domain heuristic
-                return True, c.url, 0.6
-        return False, None, 0.5
+        if verif:
+            if verif.has_website and verif.official_website_url:
+                # Double-check the LLM didn't hallucinate a social URL
+                if _is_directory_or_social(verif.official_website_url):
+                    return False, None, 0.85
+                return True, verif.official_website_url, min(verif.confidence, 1.0)
+            # LLM says no website
+            return False, None, verif.confidence
+    except Exception as e:
+        logger.warning(f"LLM website verification failed for '{business_name}': {e}")
 
+    # -----------------------------------------------------------------------
+    # SAFE fallback: if LLM fails, we DON'T assume the business has a website.
+    # Returning True here would silently kill valid leads — never do that.
+    # -----------------------------------------------------------------------
+    return False, None, 0.5
+
+
+# ---------------------------------------------------------------------------
+# Multi-query search strategy
+# ---------------------------------------------------------------------------
+
+def _build_search_queries(category: str, location: str) -> list[str]:
+    """Returns a diverse set of search queries to maximise number of real
+    business listings found.  Different query patterns hit different DDGS
+    result pages.
+    """
+    c = category.lower().rstrip("s")  # "salons" -> "salon"
+    return [
+        f"{category} in {location} phone address contact",
+        f"{c} {location} contact number",
+        f'"{category}" "{location}" facebook page',
+        f"{category} near {location} list",
+        f"{location} {category} business directory phone",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Deduplication helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, strip punctuation/whitespace for fuzzy dedup."""
+    return re.sub(r"[\W_]+", " ", name.lower()).strip()
+
+
+def _deduplicate(businesses: list[ExtractedBusiness]) -> list[ExtractedBusiness]:
+    """Remove exact or near-duplicate business names, keeping the entry with
+    the most data (phone / address / email).
+    """
+    seen: dict[str, ExtractedBusiness] = {}
+    for biz in businesses:
+        key = _normalize_name(biz.business_name)
+        if key not in seen:
+            seen[key] = biz
+        else:
+            existing = seen[key]
+            # Keep the entry that has more useful fields populated
+            existing_score = sum([
+                bool(existing.phone), bool(existing.email),
+                bool(existing.address), bool(existing.google_maps_url),
+            ])
+            new_score = sum([
+                bool(biz.phone), bool(biz.email),
+                bool(biz.address), bool(biz.google_maps_url),
+            ])
+            if new_score > existing_score:
+                seen[key] = biz
+    return list(seen.values())
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
 
 async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     """Discovers local businesses without websites."""
     category = request.business_category
     location = request.location
-    
-    # 1. Search for businesses
-    query = f"{category} in {location} address phone contact"
-    try:
-        chunks = await search_provider.search(query, task="overview", max_results=settings.max_lead_search_results)
-    except Exception as e:
-        logger.error(f"Search failed: {e}")
-        chunks = []
-        
-    if not chunks:
-        # Fallback search query
-        query = f"{category} near {location}"
+    errors: list[str] = []
+
+    # ------------------------------------------------------------------
+    # 1. Run multiple search queries in parallel for better coverage
+    # ------------------------------------------------------------------
+    queries = _build_search_queries(category, location)
+
+    async def _safe_search(q: str) -> list:
         try:
-            chunks = await search_provider.search(query, task="overview", max_results=settings.max_lead_search_results)
-        except Exception:
-            chunks = []
-            
-    errors = []
+            return await search_provider.search(q, task="overview", max_results=8)
+        except Exception as e:
+            logger.warning(f"Search query failed ({q!r}): {e}")
+            return []
+
+    results = await asyncio.gather(*[_safe_search(q) for q in queries])
+    # Flatten and deduplicate by URL
+    seen_urls: set[str] = set()
+    chunks = []
+    for batch in results:
+        for chunk in batch:
+            if chunk.url not in seen_urls:
+                seen_urls.add(chunk.url)
+                chunks.append(chunk)
+
     if not chunks:
-        errors.append("No search results returned from search provider. Please check connectivity or try a different search.")
+        errors.append("No search results returned. Try a different category or location.")
         return LeadSearchResponse(
-            leads=[],
-            total_found=0,
-            total_without_website=0,
+            leads=[], total_found=0, total_without_website=0,
             draft_email=LeadDraftEmail(
                 to_business="Prospect",
                 subject="Professional website for your business",
-                body="Hi there,\n\nI noticed you have a great business but don't have a website yet..."
+                body="Hi there,\n\nI noticed you have a great business but don't have a website yet...",
             ),
-            search_query_used=query,
-            errors=errors
+            search_query_used=queries[0],
+            errors=errors,
         )
-        
-    # Combine results
+
+    # ------------------------------------------------------------------
+    # 2. Extract business listings via LLM
+    # ------------------------------------------------------------------
     search_results_text = "\n".join(
         f"URL: {c.url}\nTitle: {c.title}\nSnippet: {c.snippet}\n"
-        for c in chunks
+        for c in chunks[:40]  # cap to keep prompt size sane
     )
-    
-    # 2. Extract listings using LLM
-    system_prompt = (
-        "You are an expert business research assistant. Your task is to extract a list of businesses from the provided search snippets.\n"
-        "For each business found, extract:\n"
-        "- business_name (clean and official name)\n"
-        "- category (e.g. Salon, School, Café)\n"
-        "- address (full address if available)\n"
-        "- phone number\n"
-        "- email (if mentioned)\n"
-        "- google_maps_url\n"
-        "- website_url (Only standalone custom websites! Do NOT put Facebook, Instagram, TripAdvisor, or Yelp urls here. Put those in social_links instead)\n"
-        "- social_links (any Facebook, Instagram, Yelp, TripAdvisor, or other directories)\n"
-        "- source_url (the url where you found this snippet)\n\n"
-        "Only extract real businesses matching the category and location. Leave fields null if not found."
+
+    extraction_system = (
+        "You are an expert business data extraction assistant.\n"
+        "Extract individual business listings from the search results provided.\n"
+        "For each business extract:\n"
+        "- business_name: the official business name\n"
+        "- category: type of business (e.g. Salon, Bakery, School)\n"
+        "- address: full street address if available\n"
+        "- phone: phone or mobile number\n"
+        "- email: business email if mentioned\n"
+        "- google_maps_url: Google Maps URL if present\n"
+        "- website_url: ONLY their own domain (e.g. mysalon.com). "
+        "  Do NOT put Facebook/Instagram/Yelp/TripAdvisor/directories here — put those in social_links.\n"
+        "- social_links: any Facebook page, Instagram profile, Yelp listing, etc.\n"
+        "- source_url: the URL of the snippet where you found this business\n\n"
+        "Only extract real businesses that match the requested category and location. "
+        "If a field is not found, leave it null. Do NOT invent or guess data."
     )
-    
-    user_prompt = (
-        f"Target Category: {category}\n"
-        f"Target Location: {location}\n\n"
+
+    extraction_user = (
+        f"Category: {category}\n"
+        f"Location: {location}\n\n"
         f"Search Results:\n{search_results_text}"
     )
-    
+
     extracted_data = None
     try:
-        extracted_data = await llm_provider.structured(system_prompt, user_prompt, ExtractedBusinessList)
+        extracted_data = await llm_provider.structured(
+            extraction_system, extraction_user, ExtractedBusinessList
+        )
     except Exception as e:
-        logger.error(f"LLM extraction failed: {e}")
-        errors.append(f"LLM extraction failed: {str(e)}")
-        
+        logger.error(f"LLM business extraction failed: {e}")
+        errors.append(f"Business extraction failed: {str(e)}")
+
     if not extracted_data or not extracted_data.businesses:
         return LeadSearchResponse(
-            leads=[],
-            total_found=0,
-            total_without_website=0,
+            leads=[], total_found=0, total_without_website=0,
             draft_email=LeadDraftEmail(
                 to_business="Prospect",
                 subject="Website proposal",
-                body="Hi there,\n\nI noticed you have a great business but don't have a website yet..."
+                body="Hi there,\n\nI noticed you have a great business but don't have a website yet...",
             ),
-            search_query_used=query,
-            errors=errors + ["Could not extract any businesses from the search results."]
+            search_query_used=queries[0],
+            errors=errors + ["Could not extract any businesses from the search results."],
         )
-        
-    extracted_businesses = extracted_data.businesses
-    total_found = len(extracted_businesses)
-    
-    # 3. Check website existence & status for each business
-    async def process_business(eb: ExtractedBusiness) -> LeadBusiness:
+
+    # Deduplicate before processing
+    raw_businesses = _deduplicate(extracted_data.businesses)
+
+    # ------------------------------------------------------------------
+    # 3. Website checking: parallel, with a cap on expensive verify calls
+    # ------------------------------------------------------------------
+
+    # Determine which businesses need deep verification (capped at 5 to avoid
+    # rate-limiting DDGS and burning too many LLM tokens)
+    MAX_VERIFY_CALLS = 5
+    verify_budget = MAX_VERIFY_CALLS
+
+    async def process_business(eb: ExtractedBusiness, allow_verify: bool) -> LeadBusiness:
         website_url = eb.website_url
         has_website = False
-        has_social_media = len(eb.social_links) > 0
-        social_links = eb.social_links
+        social_links = list(eb.social_links)
         confidence = 0.8
-        
-        # Check if the extracted website url is actually a directory/social
+
+        # Move any social/directory URLs out of website_url
         if website_url and _is_directory_or_social(website_url):
             if website_url not in social_links:
                 social_links.append(website_url)
             website_url = None
-            
+
         if website_url:
-            # An active standalone website was claimed to be found
+            # LLM found a potential standalone website — verify it's alive
             is_active, resolved_url = await check_url_active(website_url)
             if is_active:
                 has_website = True
                 website_url = resolved_url
                 confidence = 0.95
             else:
-                # Website exists but is inactive / broken!
+                # URL exists but is dead / parked
                 has_website = False
                 confidence = 0.90
-        else:
-            # No website was found in initial snippets. Let's do a verification search to be sure.
-            has_web, web_url, verif_conf = await verify_business_website(eb.business_name, location)
+        elif allow_verify:
+            # No website in snippets — do a targeted search to double-check
+            has_web, web_url, verif_conf = await verify_business_website(
+                eb.business_name, location
+            )
             confidence = verif_conf
             if has_web and web_url:
                 is_active, resolved_url = await check_url_active(web_url)
-                if is_active:
-                    has_website = True
-                    website_url = resolved_url
-                else:
-                    has_website = False
-                    website_url = web_url  # keep URL but it's inactive
-            else:
-                has_website = False
-                website_url = None
-                
-        # Clean up social links
-        clean_socials = []
-        for link in social_links:
-            if _is_directory_or_social(link) and link not in clean_socials:
-                clean_socials.append(link)
-        if clean_socials:
-            has_social_media = True
-            
+                has_website = is_active
+                website_url = resolved_url if is_active else web_url
+            # else: stays has_website=False
+        # else: no verify budget left — trust the initial extraction (no website found)
+
+        # Classify social links
+        clean_socials = [
+            link for link in social_links
+            if _is_directory_or_social(link)
+        ]
+        # Deduplicate social links
+        seen_socials: set[str] = set()
+        deduped_socials: list[str] = []
+        for link in clean_socials:
+            if link not in seen_socials:
+                seen_socials.add(link)
+                deduped_socials.append(link)
+
         return LeadBusiness(
             business_name=eb.business_name,
             category=eb.category or category,
@@ -294,54 +427,77 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             google_maps_url=eb.google_maps_url,
             has_website=has_website,
             website_url=website_url,
-            has_social_media=has_social_media,
-            social_links=clean_socials,
+            has_social_media=bool(deduped_socials),
+            social_links=deduped_socials,
             source_url=eb.source_url,
-            confidence_no_website=1.0 - confidence if has_website else confidence
+            # confidence_no_website: high value = we are confident they have NO site
+            confidence_no_website=(1.0 - confidence) if has_website else confidence,
         )
-        
-    # Process all in parallel to make it fast!
-    leads = await asyncio.gather(*[process_business(b) for b in extracted_businesses])
-    
-    # Sort leads so the ones WITHOUT a website come first
-    leads = sorted(leads, key=lambda x: x.has_website)
-    
+
+    # Decide which businesses get a deep verify search
+    # Prioritise: has phone or address (i.e. they're real, contactable businesses)
+    prioritised = sorted(
+        raw_businesses,
+        key=lambda b: (bool(b.phone) or bool(b.address)),
+        reverse=True,
+    )
+
+    tasks = []
+    remaining_verify = verify_budget
+    for eb in prioritised:
+        needs_verify = not eb.website_url or _is_directory_or_social(eb.website_url or "")
+        use_verify = needs_verify and remaining_verify > 0
+        if use_verify:
+            remaining_verify -= 1
+        tasks.append(process_business(eb, allow_verify=use_verify))
+
+    leads = list(await asyncio.gather(*tasks))
+
+    # Sort: no-website first, then by confidence descending
+    leads.sort(key=lambda x: (x.has_website, -x.confidence_no_website))
+
     total_without_website = sum(1 for lead in leads if not lead.has_website)
-    
-    # 4. Generate the global email template
+
+    # ------------------------------------------------------------------
+    # 4. Generate global email template
+    # ------------------------------------------------------------------
     global_email = await generate_global_template(
         category=category,
         location=location,
         sender_name=request.sender_name,
         sender_company=request.sender_company,
-        service_desc=request.service_description
-    )
-    
-    return LeadSearchResponse(
-        leads=leads,
-        total_found=total_found,
-        total_without_website=total_without_website,
-        draft_email=global_email,
-        search_query_used=query,
-        errors=errors
+        service_desc=request.service_description,
     )
 
+    return LeadSearchResponse(
+        leads=leads,
+        total_found=len(leads),
+        total_without_website=total_without_website,
+        draft_email=global_email,
+        search_query_used=queries[0],
+        errors=errors,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Email template generators
+# ---------------------------------------------------------------------------
 
 async def generate_global_template(
     category: str,
     location: str,
     sender_name: str,
     sender_company: str,
-    service_desc: str
+    service_desc: str,
 ) -> LeadDraftEmail:
-    """Generates a high-converting generic email template."""
+    """Generates a high-converting generic email template for the batch."""
     system_prompt = (
         "You are an expert sales outreach copywriter.\n"
-        "Draft a short, highly professional outreach email offering web design/development services to local businesses that don't have a website.\n"
+        "Draft a short, highly professional cold outreach email offering web design services "
+        "to local businesses that don't have a website.\n"
         "Keep it to 3-4 sentences. Do NOT use placeholder brackets like [Business Name] or [Insert Date].\n"
-        "Instead, write a template using the sender's details, making it clear how you help local businesses get more clients with a fast, mobile-friendly site."
+        "Write naturally using the sender's real details."
     )
-    
     user_prompt = (
         f"Business Category: {category}\n"
         f"Location: {location}\n"
@@ -349,85 +505,77 @@ async def generate_global_template(
         f"Sender Company: {sender_company}\n"
         f"Services Offered: {service_desc}"
     )
-    
-    class TempEmail(BaseModel):
+
+    class _TempEmail(BaseModel):
         subject: str
         body: str
-        
+
     try:
-        res = await llm_provider.structured(system_prompt, user_prompt, TempEmail)
+        res = await llm_provider.structured(system_prompt, user_prompt, _TempEmail)
         if res:
-            return LeadDraftEmail(
-                to_business="Prospect Business",
-                subject=res.subject,
-                body=res.body
-            )
+            return LeadDraftEmail(to_business="Prospect Business", subject=res.subject, body=res.body)
     except Exception:
         pass
-        
-    # Fallback template
-    subject = f"Web design & local customers for salons in {location}"
-    body = (
-        f"Hi there,\n\n"
-        f"I was looking for local {category} options in {location} and noticed your business, "
-        f"but couldn't find a website for it. At {sender_company}, we build simple, beautiful, and "
-        f"affordable websites that help local businesses get found on Google and get more bookings.\n\n"
-        f"Would you be open to a quick 5-minute call next week to see some of our designs?\n\n"
-        f"Best regards,\n"
-        f"{sender_name}\n"
-        f"{sender_company}"
+
+    # Fallback
+    return LeadDraftEmail(
+        to_business="Prospect Business",
+        subject=f"Professional website for your {category.lower()} in {location}",
+        body=(
+            f"Hi there,\n\n"
+            f"I was looking for local {category.lower()} options in {location} and noticed your business, "
+            f"but couldn't find a website for it. At {sender_company}, we build simple, beautiful, and "
+            f"affordable websites that help local businesses get found on Google and get more bookings.\n\n"
+            f"Would you be open to a quick 5-minute call next week to see some of our designs?\n\n"
+            f"Best regards,\n{sender_name}\n{sender_company}"
+        ),
     )
-    return LeadDraftEmail(to_business="Prospect Business", subject=subject, body=body)
-
-
-class LLMOutreachDrafts(BaseModel):
-    email_subject: str
-    email_body: str
-    social_dm_body: str
-    sms_whatsapp_body: str
-    call_script_body: str
 
 
 async def generate_custom_lead_email(
     lead: LeadBusiness,
     sender_name: str,
     sender_company: str,
-    service_desc: str
+    service_desc: str,
 ) -> LeadOutreachDrafts:
-    """Generates highly personalized outreach pitches for multiple communication channels."""
+    """Generates highly personalized outreach pitches for all communication channels in one LLM call."""
+    # Build a rich presence description to ground the outreach
+    if lead.has_social_media and lead.social_links:
+        netloc = urlparse(lead.social_links[0]).netloc.removeprefix("www.") or "social media"
+        presence_detail = f"I came across your page on {netloc}."
+    elif lead.phone:
+        presence_detail = f"I found your contact number ({lead.phone}) listed online."
+    elif lead.address:
+        presence_detail = f"I found your business listed at {lead.address}."
+    else:
+        presence_detail = "I found your business listed online."
+
     system_prompt = (
         "You are an expert sales copywriter specializing in local business cold outreach.\n"
-        "Generate outreach pitches for multiple communication channels for a business that does not have a website.\n"
-        "Provide:\n"
-        "1. A cold email (email_subject + email_body)\n"
-        "2. A direct message (social_dm_body) for Facebook/Instagram (short, punchy, 1-2 paragraphs)\n"
-        "3. An SMS/WhatsApp message (sms_whatsapp_body) (1-2 sentences, friendly and direct)\n"
-        "4. A cold call script (call_script_body) (brief hook, value proposition, and booking pitch)\n\n"
-        "Adapt the details (business name, category, location) to the business, and use the sender's info. "
-        "Do NOT use brackets or template variables like [Name] or [City] in the output."
+        "Generate personalized pitches for FOUR communication channels for a business that lacks an official website.\n\n"
+        "Channels to generate:\n"
+        "1. email_subject + email_body: a professional cold email (3-5 sentences)\n"
+        "2. social_dm_body: a casual, punchy Facebook/Instagram DM (2-3 sentences)\n"
+        "3. sms_whatsapp_body: a very short WhatsApp/SMS text (1-2 sentences max, conversational tone)\n"
+        "4. call_script_body: a phone cold-call opening script with hook, value prop, and ask\n\n"
+        "Rules:\n"
+        "- Personalise every channel with the business name and category.\n"
+        "- Highlight their lack of a website naturally — don't be blunt or rude about it.\n"
+        "- Show the VALUE (get found on Google, online bookings, etc.).\n"
+        "- Use the sender's real name and company name. Do NOT use [brackets] for placeholders."
     )
-    
-    presence_detail = ""
-    if lead.has_social_media and lead.social_links:
-        presence_detail = f"I saw your active page on {urlparse(lead.social_links[0]).netloc or 'social media'}."
-    elif lead.phone:
-        presence_detail = f"I found your contact number {lead.phone} listed online."
-    else:
-        presence_detail = "I saw your business listing online."
-        
+
     user_prompt = (
-        f"Business Details:\n"
-        f"- Name: {lead.business_name}\n"
-        f"- Category: {lead.category}\n"
-        f"- Location: {lead.address or 'local area'}\n"
-        f"- Contact Phone: {lead.phone or 'Not available'}\n"
-        f"- Presence: {presence_detail}\n\n"
-        f"Sender Details:\n"
-        f"- Name: {sender_name}\n"
-        f"- Company: {sender_company}\n"
-        f"- Service Offered: {service_desc}"
+        f"Business: {lead.business_name}\n"
+        f"Category: {lead.category or 'local business'}\n"
+        f"Location: {lead.address or 'their area'}\n"
+        f"Phone: {lead.phone or 'Not found'}\n"
+        f"How I found them: {presence_detail}\n\n"
+        f"Sender Name: {sender_name}\n"
+        f"Sender Company: {sender_company}\n"
+        f"Service Offered: {service_desc}"
     )
-    
+
     try:
         res = await llm_provider.structured(system_prompt, user_prompt, LLMOutreachDrafts)
         if res:
@@ -436,52 +584,46 @@ async def generate_custom_lead_email(
                 email_body=res.email_body,
                 social_dm_body=res.social_dm_body,
                 sms_whatsapp_body=res.sms_whatsapp_body,
-                call_script_body=res.call_script_body
+                call_script_body=res.call_script_body,
             )
     except Exception as e:
-        logger.error(f"Failed to generate multi-channel drafts: {e}")
-        
-    # Fallback templates
-    email_subject = f"Website & online bookings for {lead.business_name}"
+        logger.error(f"Multi-channel draft generation failed for '{lead.business_name}': {e}")
+
+    # Safe fallbacks — never return None, always give the user something usable
+    email_subject = f"A website for {lead.business_name}?"
     email_body = (
         f"Hi,\n\n"
-        f"I came across {lead.business_name} while researching local businesses in the area. {presence_detail} "
-        f"I noticed you don't have a website yet. We specialize in building fast, mobile-friendly websites that "
-        f"make it easy for customers to find you and book your services.\n\n"
-        f"Would you be open to a quick 5-minute chat next week to see if we can help you grow your business?\n\n"
-        f"Best regards,\n"
-        f"{sender_name}\n"
-        f"{sender_company}"
+        f"{presence_detail} I noticed {lead.business_name} doesn't have a website yet. "
+        f"We help {lead.category or 'local businesses'} like yours get a simple, professional site "
+        f"that makes it easy for customers to find you on Google and book directly.\n\n"
+        f"Would you be open to a quick 5-minute chat this week to look at a free mock-up we can make for you?\n\n"
+        f"Best regards,\n{sender_name}\n{sender_company}"
     )
-    
     social_dm = (
-        f"Hi {lead.business_name} team,\n\n"
-        f"Love your business page! {presence_detail} "
-        f"I noticed you don't have a website for direct booking or showing your services. "
-        f"We build simple, high-converting websites for {lead.category or 'local businesses'} that make it easy for "
-        f"clients to find you and book directly from Google.\n\n"
-        f"Would you be open to seeing a quick 2-minute mock-up of what we can do for you?"
+        f"Hi {lead.business_name}! {presence_detail} "
+        f"I noticed you don't have your own website yet — we build fast, mobile-friendly sites for "
+        f"{lead.category or 'local businesses'} that help you get more bookings from Google. "
+        f"Want to see a quick mock-up?"
     )
-    
-    sms_whatsapp = (
-        f"Hi, this is {sender_name} from {sender_company}. I saw your page for {lead.business_name} and noticed you "
-        f"don't have a website yet. We build simple, professional sites that help get more bookings. "
-        f"Would you be open to a quick chat this week?"
+    sms_text = (
+        f"Hi, I'm {sender_name} from {sender_company}. "
+        f"I came across {lead.business_name} and noticed you don't have a website. "
+        f"We build affordable sites that bring in more customers — open to a quick chat?"
     )
-    
     call_script = (
-        f"Salesperson: 'Hi, is this the owner or manager of {lead.business_name}?'\n"
-        f"Owner: [Responds]\n"
-        f"Salesperson: 'Hi, my name is {sender_name} from {sender_company}. I was looking at your services online "
-        f"and noticed you have a great presence but don't have an official website. We help local businesses "
-        f"set up simple, professional websites to get more direct bookings. I wanted to see if you'd be open to a quick "
-        f"5-minute chat next week to look at a free mock-up we made for your business?'"
+        f"Opener: 'Hi, could I speak with the owner or manager of {lead.business_name}, please?'\n\n"
+        f"Hook: 'Hi, my name is {sender_name} from {sender_company}. "
+        f"{presence_detail} I was doing some research and noticed {lead.business_name} "
+        f"doesn't have its own website yet.'\n\n"
+        f"Value Prop: 'We help {lead.category or 'local businesses'} set up a simple, professional site "
+        f"that gets them found on Google. Most of our clients see new enquiries within the first month.'\n\n"
+        f"Ask: 'I'd love to show you a free mock-up of what we could do for {lead.business_name}. "
+        f"Would you have 5 minutes to take a look this week?'"
     )
-    
     return LeadOutreachDrafts(
         email_subject=email_subject,
         email_body=email_body,
         social_dm_body=social_dm,
-        sms_whatsapp_body=sms_whatsapp,
-        call_script_body=call_script
+        sms_whatsapp_body=sms_text,
+        call_script_body=call_script,
     )
