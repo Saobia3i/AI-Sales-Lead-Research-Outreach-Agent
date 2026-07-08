@@ -17,7 +17,7 @@ search_provider = DDGSSearchProvider()
 
 # Firecrawl is imported lazily so the app starts even if the package is absent
 try:
-    from firecrawl import FirecrawlApp as _FirecrawlApp  # type: ignore
+    from firecrawl import V1FirecrawlApp as _FirecrawlApp  # type: ignore
     _firecrawl_available = True
 except ImportError:
     _FirecrawlApp = None  # type: ignore
@@ -62,6 +62,8 @@ class LLMOutreachDrafts(BaseModel):
 # ---------------------------------------------------------------------------
 
 # These are NOT official business websites — do NOT count as "has a website"
+# NOTE: Website builders (Wix, WordPress, Squarespace, Weebly etc.) are NOT in
+# this list because a business hosted on them DOES have a website.
 _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     # Global social / video
     "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
@@ -73,9 +75,6 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     # BD-specific listing sites
     "bikroy.com", "shajgoj.com", "chaldal.com", "daraz.com.bd", "bdsaloons.com",
     "bd-beauty.com", "bangladesh.local.com", "businesslistbd.com",
-    # Free website builders (not standalone business sites)
-    "wixsite.com", "wix.com", "blogspot.com", "wordpress.com",
-    "weebly.com", "squarespace.com", "webador.com", "site123.com",
     # Aggregators / media
     "bloomberg.com", "crunchbase.com", "github.com", "medium.com",
     "lh3.googleusercontent.com", "maps.google.com", "google.com",
@@ -134,6 +133,13 @@ async def _check_url_httpx_fallback(url: str, timeout: int) -> tuple[bool, str |
     return False, None
 
 
+def _get_firecrawl_client():
+    """Returns a Firecrawl V1 client if available and configured."""
+    if _firecrawl_available and settings.firecrawl_api_key:
+        return _FirecrawlApp(api_key=settings.firecrawl_api_key)
+    return None
+
+
 async def check_url_active(url: str) -> tuple[bool, str | None]:
     """Verifies that a URL resolves to a real, accessible website.
 
@@ -156,34 +162,40 @@ async def check_url_active(url: str) -> tuple[bool, str | None]:
     # ------------------------------------------------------------------
     # 1. Firecrawl — primary check
     # ------------------------------------------------------------------
-    if _firecrawl_available and settings.firecrawl_api_key:
+    fc = _get_firecrawl_client()
+    if fc is not None:
         try:
-            fc = _FirecrawlApp(api_key=settings.firecrawl_api_key)
-
             # Run the blocking SDK call in a thread to avoid blocking the event loop
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: fc.scrape_url(
                     normalized,
-                    params={
-                        "formats": ["markdown"],
-                        "onlyMainContent": True,
-                        "timeout": timeout * 1000,  # Firecrawl uses ms
-                    },
+                    formats=["markdown"],
+                    only_main_content=True,
+                    timeout=max(timeout * 1000, 30000),
                 ),
             )
 
-            # A successful scrape with any content = website is live
-            if result and (result.get("markdown") or result.get("html") or result.get("metadata")):
-                resolved = (
-                    result.get("metadata", {}).get("url")
-                    or result.get("metadata", {}).get("sourceURL")
-                    or normalized
+            # V1ScrapeResponse is a Pydantic model, access attrs directly
+            if result:
+                has_content = bool(
+                    getattr(result, "markdown", None)
+                    or getattr(result, "html", None)
+                    or getattr(result, "metadata", None)
                 )
-                logger.debug(f"Firecrawl confirmed live: {normalized} -> {resolved}")
-                return True, resolved
+                if has_content:
+                    metadata = getattr(result, "metadata", None)
+                    resolved = normalized
+                    if metadata and isinstance(metadata, dict):
+                        resolved = (
+                            metadata.get("url")
+                            or metadata.get("sourceURL")
+                            or normalized
+                        )
+                    logger.debug(f"Firecrawl confirmed live: {normalized} -> {resolved}")
+                    return True, resolved
 
-            # Firecrawl returned a result but with no content — treat as dead/parked
+            # Firecrawl returned but with no content — treat as dead/parked
             logger.debug(f"Firecrawl returned empty content for {normalized}")
             return False, None
 
@@ -203,39 +215,80 @@ async def check_url_active(url: str) -> tuple[bool, str | None]:
 # ---------------------------------------------------------------------------
 # Website verification (search-based, used when no website URL was found)
 # ---------------------------------------------------------------------------
-
 async def verify_business_website(
     business_name: str,
     location: str,
 ) -> tuple[bool, str | None, float]:
     """Search the web to check if a business has an official standalone website.
 
+    Uses multiple strategies:
+      1. Firecrawl web search (if available) — better results than DDGS
+      2. DDGS search fallback
+      3. LLM analysis of search results
+      4. Firecrawl scrape to confirm candidate URL is live
+
     Returns:
         (has_website, website_url, confidence)
     """
     query = f'"{business_name}" {location} official website'
-    try:
-        chunks = await search_provider.search(query, task="overview", max_results=4)
-    except Exception:
-        return False, None, 0.5
+    search_results_text = ""
+    candidate_urls: list[str] = []
 
-    if not chunks:
-        # No search results — we can't confirm but lean towards no website
-        return False, None, 0.75
+    # ------------------------------------------------------------------
+    # Strategy 1: Try Firecrawl search (better quality results)
+    # ------------------------------------------------------------------
+    fc = _get_firecrawl_client()
+    if fc is not None:
+        try:
+            fc_results = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: fc.search(query, limit=5),
+            )
+            if fc_results and hasattr(fc_results, "data") and fc_results.data:
+                parts = []
+                for item in fc_results.data:
+                    url = getattr(item, "url", "") or ""
+                    title = getattr(item, "title", "") or ""
+                    desc = getattr(item, "description", "") or getattr(item, "markdown", "") or ""
+                    parts.append(f"Title: {title}\nURL: {url}\nSnippet: {desc[:300]}\n")
+                    if url and not _is_directory_or_social(url):
+                        candidate_urls.append(url)
+                search_results_text = "\n".join(parts)
+        except Exception as fc_err:
+            logger.debug(f"Firecrawl search failed for '{business_name}': {fc_err}")
 
-    search_results_text = "\n".join(
-        f"Title: {c.title}\nURL: {c.url}\nSnippet: {c.snippet}\n"
-        for c in chunks
-    )
+    # ------------------------------------------------------------------
+    # Strategy 2: DDGS fallback if Firecrawl didn't return results
+    # ------------------------------------------------------------------
+    if not search_results_text:
+        try:
+            chunks = await search_provider.search(query, task="overview", max_results=6)
+        except Exception:
+            return False, None, 0.5
 
+        if not chunks:
+            return False, None, 0.75
+
+        search_results_text = "\n".join(
+            f"Title: {c.title}\nURL: {c.url}\nSnippet: {c.snippet}\n"
+            for c in chunks
+        )
+        for c in chunks:
+            if c.url and not _is_directory_or_social(c.url):
+                candidate_urls.append(c.url)
+
+    # ------------------------------------------------------------------
+    # LLM analysis
+    # ------------------------------------------------------------------
     system_prompt = (
         "You are a lead verification assistant.\n"
         "Given a business name, its location, and web search results, decide if the business has "
-        "an official standalone website (not a social page or directory listing).\n"
+        "an official website (NOT just a social page or directory listing).\n"
         "Rules:\n"
         "- Do NOT count Facebook, Instagram, LinkedIn, YouTube, TikTok, or any social network as a website.\n"
         "- Do NOT count Yelp, TripAdvisor, Foursquare, YellowPages, Zomato, Justdial or any listing directory.\n"
-        "- Only count a domain the business OWNS (e.g. mysalon.com, bestcafe.com.bd).\n"
+        "- DO count websites on platforms like Wix, WordPress, Squarespace, Weebly — these ARE real business websites.\n"
+        "- Count any domain the business uses for their web presence (e.g. mysalon.com, bestcafe.com.bd, mybiz.wixsite.com).\n"
         "- If in doubt, set has_website to false.\n"
         "Set confidence between 0.0 and 1.0 — higher when the result is clearly the business's own site."
     )
@@ -259,9 +312,20 @@ async def verify_business_website(
     except Exception as e:
         logger.warning(f"LLM website verification failed for '{business_name}': {e}")
 
+    # ------------------------------------------------------------------
+    # Last resort: try scraping candidate URLs directly with Firecrawl
+    # ------------------------------------------------------------------
+    if candidate_urls and fc is not None:
+        for cand_url in candidate_urls[:2]:  # limit to 2 to save credits
+            try:
+                is_active, resolved = await check_url_active(cand_url)
+                if is_active:
+                    return True, resolved, 0.7
+            except Exception:
+                continue
+
     # -----------------------------------------------------------------------
     # SAFE fallback: if LLM fails, we DON'T assume the business has a website.
-    # Returning True here would silently kill valid leads — never do that.
     # -----------------------------------------------------------------------
     return False, None, 0.5
 
@@ -382,7 +446,8 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         "- phone: phone or mobile number\n"
         "- email: business email if mentioned\n"
         "- google_maps_url: Google Maps URL if present\n"
-        "- website_url: ONLY their own domain (e.g. mysalon.com). "
+        "- website_url: Their own website domain (e.g. mysalon.com, mybiz.wixsite.com, mybiz.wordpress.com). "
+        "  Websites on Wix, WordPress, Squarespace, Weebly etc. DO count as a website. "
         "  Do NOT put Facebook/Instagram/Yelp/TripAdvisor/directories here — put those in social_links.\n"
         "- social_links: any Facebook page, Instagram profile, Yelp listing, etc.\n"
         "- source_url: the URL of the snippet where you found this business\n\n"
@@ -424,9 +489,8 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     # 3. Website checking: parallel, with a cap on expensive verify calls
     # ------------------------------------------------------------------
 
-    # Determine which businesses need deep verification (capped at 5 to avoid
-    # rate-limiting DDGS and burning too many LLM tokens)
-    MAX_VERIFY_CALLS = 5
+    # Determine which businesses need deep verification
+    MAX_VERIFY_CALLS = 15
     verify_budget = MAX_VERIFY_CALLS
 
     async def process_business(eb: ExtractedBusiness, allow_verify: bool) -> LeadBusiness:
