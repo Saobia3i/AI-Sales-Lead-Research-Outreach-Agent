@@ -15,6 +15,14 @@ from app.schemas import LeadBusiness, LeadDraftEmail, LeadSearchRequest, LeadSea
 logger = logging.getLogger(__name__)
 search_provider = DDGSSearchProvider()
 
+# Firecrawl is imported lazily so the app starts even if the package is absent
+try:
+    from firecrawl import FirecrawlApp as _FirecrawlApp  # type: ignore
+    _firecrawl_available = True
+except ImportError:
+    _FirecrawlApp = None  # type: ignore
+    _firecrawl_available = False
+
 # ---------------------------------------------------------------------------
 # Internal structured output models (not exposed via API)
 # ---------------------------------------------------------------------------
@@ -93,22 +101,11 @@ def _is_directory_or_social(url: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Website liveness checker
+# Website liveness checker — Firecrawl primary, httpx fallback
 # ---------------------------------------------------------------------------
 
-async def check_url_active(url: str) -> tuple[bool, str | None]:
-    """Attempts to reach the website. Returns (is_active, resolved_url).
-    Uses HEAD first (faster), falls back to GET, then tries HTTP if HTTPS fails.
-    """
-    if not url:
-        return False, None
-
-    normalized = url.strip()
-    if not normalized.startswith(("http://", "https://")):
-        normalized = "https://" + normalized
-
-    timeout = settings.website_check_timeout_seconds
-
+async def _check_url_httpx_fallback(url: str, timeout: int) -> tuple[bool, str | None]:
+    """Raw HTTP HEAD/GET check — used when Firecrawl is unavailable."""
     async def _try(target: str) -> tuple[bool, str | None]:
         try:
             async with httpx.AsyncClient(
@@ -127,17 +124,80 @@ async def check_url_active(url: str) -> tuple[bool, str | None]:
             pass
         return False, None
 
-    is_active, resolved = await _try(normalized)
+    is_active, resolved = await _try(url)
     if is_active:
         return True, resolved
-
-    # Retry with HTTP if HTTPS failed
-    if normalized.startswith("https://"):
-        is_active, resolved = await _try(normalized.replace("https://", "http://", 1))
+    if url.startswith("https://"):
+        is_active, resolved = await _try(url.replace("https://", "http://", 1))
         if is_active:
             return True, resolved
-
     return False, None
+
+
+async def check_url_active(url: str) -> tuple[bool, str | None]:
+    """Verifies that a URL resolves to a real, accessible website.
+
+    Strategy:
+      1. Try Firecrawl scrape (handles JS, Cloudflare, bot-protection, SSL).
+         A successful scrape with non-empty content = site is alive.
+      2. Fall back to raw httpx HEAD/GET if Firecrawl is unavailable or errors.
+
+    Returns (is_active, resolved_url).
+    """
+    if not url:
+        return False, None
+
+    normalized = url.strip()
+    if not normalized.startswith(("http://", "https://")):
+        normalized = "https://" + normalized
+
+    timeout = settings.website_check_timeout_seconds
+
+    # ------------------------------------------------------------------
+    # 1. Firecrawl — primary check
+    # ------------------------------------------------------------------
+    if _firecrawl_available and settings.firecrawl_api_key:
+        try:
+            fc = _FirecrawlApp(api_key=settings.firecrawl_api_key)
+
+            # Run the blocking SDK call in a thread to avoid blocking the event loop
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: fc.scrape_url(
+                    normalized,
+                    params={
+                        "formats": ["markdown"],
+                        "onlyMainContent": True,
+                        "timeout": timeout * 1000,  # Firecrawl uses ms
+                    },
+                ),
+            )
+
+            # A successful scrape with any content = website is live
+            if result and (result.get("markdown") or result.get("html") or result.get("metadata")):
+                resolved = (
+                    result.get("metadata", {}).get("url")
+                    or result.get("metadata", {}).get("sourceURL")
+                    or normalized
+                )
+                logger.debug(f"Firecrawl confirmed live: {normalized} -> {resolved}")
+                return True, resolved
+
+            # Firecrawl returned a result but with no content — treat as dead/parked
+            logger.debug(f"Firecrawl returned empty content for {normalized}")
+            return False, None
+
+        except Exception as fc_err:
+            logger.warning(
+                f"Firecrawl scrape failed for {normalized!r}: {fc_err}. "
+                "Falling back to httpx check."
+            )
+            # fall through to httpx fallback
+
+    # ------------------------------------------------------------------
+    # 2. httpx fallback
+    # ------------------------------------------------------------------
+    return await _check_url_httpx_fallback(normalized, timeout)
 
 
 # ---------------------------------------------------------------------------
