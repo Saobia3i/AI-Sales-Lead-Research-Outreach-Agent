@@ -15,6 +15,7 @@ from app.services.db import get_discovered_names, save_leads
 
 logger = logging.getLogger(__name__)
 search_provider = DDGSSearchProvider()
+MIN_NO_WEBSITE_CONFIDENCE = 0.9
 
 # Firecrawl is imported lazily so the app starts even if the package is absent
 try:
@@ -144,8 +145,18 @@ def _is_matching_domain(business_name: str, url: str) -> bool:
     try:
         parsed = urlparse(url.lower())
         domain = (parsed.netloc or parsed.path).removeprefix("www.")
-        # Normalize business name to alphanumeric words
-        words = [w for w in re.split(r'\W+', business_name.lower()) if len(w) > 2]
+        domain_label = domain.split(".")[0]
+        compact_domain = _compact_alnum(domain_label)
+        compact_name = _compact_alnum(business_name)
+        if compact_name and compact_name in compact_domain:
+            return True
+
+        # Normalize business name to alphanumeric words. Keep numeric brand
+        # tokens like "3" in "Salon 3"; they are often part of short names.
+        words = [
+            w for w in re.split(r'\W+', business_name.lower())
+            if len(w) > 2 or w.isdigit()
+        ]
         # Common non-unique words to ignore (including general industry nouns and category indicators)
         ignore_words = {
             "salon", "beauty", "parlour", "lounge", "spa", "shop", "center", "centre", "academy", 
@@ -170,6 +181,11 @@ def _is_matching_domain(business_name: str, url: str) -> bool:
         for word in search_words:
             if word in domain:
                 return True
+
+        significant_words = [w for w in words if w not in ignore_words]
+        compact_significant_name = "".join(significant_words)
+        if len(compact_significant_name) >= 3 and compact_significant_name in compact_domain:
+            return True
     except Exception:
         pass
     return False
@@ -356,6 +372,12 @@ async def verify_business_website(
         (has_website, website_url, confidence)
     """
     query = f"{business_name} {location} website"
+    verification_queries = [
+        f'"{business_name}" "{location}" website',
+        f'"{business_name}" "{location}" official website',
+        f'"{business_name}" website',
+        f"{business_name} {location} contact",
+    ]
     search_results_text = ""
     candidate_urls: list[str] = []
     candidate_evidence: dict[str, tuple[str, str]] = {}
@@ -398,10 +420,10 @@ async def verify_business_website(
         try:
             chunks = await search_provider.search(query, task="overview", max_results=6)
         except Exception:
-            return False, None, 0.5
+            chunks = []
 
         if not chunks:
-            return False, None, 0.75
+            chunks = []
 
         search_results_text = "\n".join(
             f"Title: {c.title}\nURL: {c.url}\nSnippet: {c.snippet}\n"
@@ -412,20 +434,55 @@ async def verify_business_website(
                 candidate_urls.append(c.url)
                 candidate_evidence[c.url] = (c.title or "", c.snippet or "")
 
+    # Always add exact-match searches. A single broad query can miss official
+    # domains, and missing an existing website is worse than hiding a lead.
+    extra_queries = [q for q in verification_queries if q != query]
+
+    async def _extra_ddgs_search(extra_query: str) -> list[EvidenceChunk]:
+        try:
+            return await search_provider.search(extra_query, task="overview", max_results=4)
+        except Exception:
+            return []
+
+    extra_batches = await asyncio.gather(*[_extra_ddgs_search(q) for q in extra_queries])
+    seen_urls = set(candidate_urls)
+    extra_parts: list[str] = []
+    for batch in extra_batches:
+        for chunk in batch:
+            if not chunk.url or chunk.url in seen_urls:
+                continue
+            seen_urls.add(chunk.url)
+            extra_parts.append(f"Title: {chunk.title}\nURL: {chunk.url}\nSnippet: {chunk.snippet}\n")
+            if not _is_directory_or_social(chunk.url):
+                candidate_urls.append(chunk.url)
+                candidate_evidence[chunk.url] = (chunk.title or "", chunk.snippet or "")
+
+    if extra_parts:
+        search_results_text = "\n".join([search_results_text, *extra_parts]).strip()
+
+    if not search_results_text:
+        return False, None, 0.35
+
     # ------------------------------------------------------------------
     # Programmatic verification: Check if any candidate URL matches the business name
     # ------------------------------------------------------------------
     if candidate_urls:
-        for cand_url in candidate_urls[:3]:
+        for cand_url in candidate_urls[:8]:
             title, snippet = candidate_evidence.get(cand_url, ("", ""))
             if _is_plausible_official_website(business_name, cand_url, title, snippet):
                 is_active, resolved = await check_url_active(cand_url)
                 if is_active:
                     logger.info(f"Programmatic verification confirmed official website for '{business_name}': {resolved}")
                     return True, resolved, 0.95
+                logger.info(
+                    "Search found plausible official website for %r but liveness check failed: %s",
+                    business_name,
+                    cand_url,
+                )
+                return True, cand_url, 0.9
 
     plausible_candidate_urls = [
-        cand_url for cand_url in candidate_urls[:5]
+        cand_url for cand_url in candidate_urls[:8]
         if _is_plausible_official_website(
             business_name,
             cand_url,
@@ -464,7 +521,7 @@ async def verify_business_website(
                 if _is_directory_or_social(verif.official_website_url):
                     return False, None, 0.85
                 is_active, resolved = await check_url_active(verif.official_website_url)
-                return True, resolved or verif.official_website_url, min(verif.confidence, 1.0)
+                return True, resolved or verif.official_website_url, min(max(verif.confidence, 0.9), 1.0)
             # LLM says no website
             if plausible_candidate_urls:
                 return True, plausible_candidate_urls[0], max(verif.confidence, 0.6)
@@ -488,9 +545,9 @@ async def verify_business_website(
                 continue
 
     # -----------------------------------------------------------------------
-    # Safe fallback: no credible official/custom/builder website was found.
+    # Safe fallback: search was inconclusive, so do not show as a no-website lead.
     # -----------------------------------------------------------------------
-    return False, None, 0.75
+    return False, None, 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +686,16 @@ def _should_keep_processed_lead(lead: LeadBusiness) -> bool:
     if not lead.has_website:
         return True
     return _has_contact_medium(lead)
+
+
+def _only_no_website_leads(leads: list[LeadBusiness]) -> list[LeadBusiness]:
+    """Return only businesses that survived verification as no-website leads."""
+    return [
+        lead for lead in leads
+        if not lead.has_website
+        and not lead.website_url
+        and lead.confidence_no_website >= MIN_NO_WEBSITE_CONFIDENCE
+    ]
 
 
 def _name_from_search_result(title: str | None, url: str) -> str | None:
@@ -1132,8 +1199,9 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
 
     tasks = [process_business(eb) for eb in raw_businesses]
 
-    leads = list(await asyncio.gather(*tasks))
-    leads = [lead for lead in leads if _should_keep_processed_lead(lead)]
+    processed_leads = list(await asyncio.gather(*tasks))
+    processed_leads = [lead for lead in processed_leads if _should_keep_processed_lead(lead)]
+    leads = _only_no_website_leads(processed_leads)
 
     if not leads:
         return LeadSearchResponse(
@@ -1147,10 +1215,10 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             errors=errors + ["Businesses were found, but they appeared to have websites and no usable contact medium."],
         )
 
-    # Sort: no-website first, then by confidence descending
-    leads.sort(key=lambda x: (x.has_website, -x.confidence_no_website))
+    # Sort by confidence that no official website was found.
+    leads.sort(key=lambda x: -x.confidence_no_website)
 
-    total_without_website = sum(1 for lead in leads if not lead.has_website)
+    total_without_website = len(leads)
 
     # ------------------------------------------------------------------
     # 4. Generate global email template
@@ -1163,8 +1231,8 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         service_desc=request.service_description,
     )
 
-    # 5. Save all processed leads to SQLite database, even if the API response
-    # is limited for display.
+    # 5. Save only verified no-website leads. Businesses with websites are
+    # processed for exclusion, but they are not prospects for this workflow.
     if leads:
         try:
             save_leads(leads, location)

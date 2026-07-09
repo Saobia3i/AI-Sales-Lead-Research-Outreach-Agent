@@ -4,11 +4,39 @@ import hashlib
 import os
 import logging
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "leads.db")
 TABLE_NAME = "leads"
+
+_DIRECTORY_OR_SOCIAL_DOMAINS: frozenset[str] = frozenset({
+    "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
+    "youtube.com", "tiktok.com", "pinterest.com", "threads.net", "snapchat.com",
+    "yelp.com", "tripadvisor.com", "yellowpages.com", "foursquare.com",
+    "groupon.com", "mapquest.com", "justdial.com", "zomato.com", "swiggy.com",
+    "foodpanda.com", "happycow.net", "yell.com", "bbb.org", "trustpilot.com",
+    "angi.com", "homeadvisor.com", "thumbtack.com", "houzz.com", "nextdoor.com",
+    "opentable.com", "alignable.com", "superpages.com", "local.com", "manta.com",
+    "citysearch.com", "merchantcircle.com", "google.com", "maps.google.com",
+})
+
+
+def _looks_like_standalone_source_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url.lower())
+        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        if not domain or "." not in domain:
+            return False
+        return not any(
+            domain == blocked or domain.endswith("." + blocked)
+            for blocked in _DIRECTORY_OR_SOCIAL_DOMAINS
+        )
+    except Exception:
+        return False
 
 def get_connection():
     """Returns a connection to the SQLite database."""
@@ -73,6 +101,9 @@ def save_leads(leads, location: str) -> int:
     try:
         cursor = conn.cursor()
         for lead in leads:
+            if lead.has_website or lead.website_url:
+                continue
+
             # Generate stable unique ID
             lead_id = generate_lead_id(lead.business_name, lead.category, lead.address)
             
@@ -110,13 +141,13 @@ def save_leads(leads, location: str) -> int:
     return saved_count
 
 def get_stored_leads(category: str | None = None, location: str | None = None) -> list[dict]:
-    """Retrieves all stored leads from the database, optionally filtered by category/location."""
+    """Retrieves stored no-website leads, optionally filtered by category/location."""
     init_db()
     conn = get_connection()
     results = []
     try:
         cursor = conn.cursor()
-        query = f"SELECT * FROM {TABLE_NAME} WHERE 1=1"
+        query = f"SELECT * FROM {TABLE_NAME} WHERE has_website = 0 AND COALESCE(website_url, '') = ''"
         params = []
         
         if category:
@@ -131,6 +162,9 @@ def get_stored_leads(category: str | None = None, location: str | None = None) -
         cursor.execute(query, params)
         rows = cursor.fetchall()
         for row in rows:
+            if _looks_like_standalone_source_url(row["source_url"]):
+                continue
+
             social_links = []
             try:
                 social_links = json.loads(row["social_links"]) if row["social_links"] else []
