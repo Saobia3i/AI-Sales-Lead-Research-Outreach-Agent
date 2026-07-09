@@ -27,6 +27,10 @@ import {
   AccordionSummary,
   AccordionDetails,
   ButtonGroup,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from "@mui/material";
 import Grid from "@mui/material/Grid";
 import {
@@ -185,6 +189,16 @@ const theme = createTheme({
 
 const SUGGESTIONS = ["Beauty Salons", "Tutoring Centers", "Gyms", "Cafes", "Dentists", "Mechanics"];
 const LOCATION_SUGGESTIONS = ["New York", "London", "Los Angeles", "Birmingham", "Chicago", "Manchester"];
+const US_STATES = [
+  "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", 
+  "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", 
+  "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", 
+  "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", 
+  "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", 
+  "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", 
+  "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", 
+  "Wisconsin", "Wyoming"
+];
 
 export default function Home() {
   const [category, setCategory] = useState("Beauty Salons");
@@ -560,6 +574,33 @@ export default function Home() {
                             />
                           ))}
                         </Box>
+                        <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
+                          <InputLabel id="us-state-label" sx={{ color: "rgba(255,255,255,0.7)" }}>Or Select US State Preset</InputLabel>
+                          <Select
+                            labelId="us-state-label"
+                            value={US_STATES.includes(location.replace(", USA", "")) ? location.replace(", USA", "") : ""}
+                            label="Or Select US State Preset"
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                setLocation(e.target.value + ", USA");
+                              }
+                            }}
+                            sx={{
+                              bgcolor: "rgba(15, 23, 42, 0.4)",
+                              "& .MuiOutlinedInput-notchedOutline": {
+                                borderColor: "rgba(255, 255, 255, 0.1)",
+                              },
+                              "&:hover .MuiOutlinedInput-notchedOutline": {
+                                borderColor: "rgba(255, 255, 255, 0.2)",
+                              },
+                            }}
+                          >
+                            <MenuItem value=""><em>None (Custom location)</em></MenuItem>
+                            {US_STATES.map((state) => (
+                              <MenuItem key={state} value={state}>{state}</MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
                       </Grid>
 
                       {/* Outreach Settings Collapsible */}
