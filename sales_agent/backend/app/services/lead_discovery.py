@@ -1164,6 +1164,14 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                 if is_active:
                     website_url = resolved_url
                     confidence = max(confidence, 0.9)
+            else:
+                # FIX: previously `confidence` was left at its default 0.8
+                # here, so every genuinely no-website business ended up with
+                # confidence_no_website == 0.8, which is below
+                # MIN_NO_WEBSITE_CONFIDENCE (0.9) and therefore got silently
+                # dropped by `_only_no_website_leads`. Propagate the real
+                # confidence returned by verify_business_website instead.
+                confidence = verif_conf
 
         # Classify social links
         clean_socials = [
