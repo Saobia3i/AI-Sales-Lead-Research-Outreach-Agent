@@ -36,7 +36,7 @@ class ExtractedBusiness(BaseModel):
     email: str | None = None
     google_maps_url: str | None = None
     website_url: str | None = None
-    social_links: list[str] = Field(default_factory=list)
+    social_links: list[str] | None = None
     source_url: str | None = None
 
 
@@ -481,6 +481,155 @@ def _deduplicate(businesses: list[ExtractedBusiness]) -> list[ExtractedBusiness]
     return list(seen.values())
 
 
+_PHONE_RE = re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_ADDRESS_RE = re.compile(
+    r"\b\d{1,6}\s+[A-Za-z0-9 .'-]{2,80}\s+"
+    r"(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Way|Pl|Place|Ct|Court)\b"
+    r"[^.;\n]{0,80}",
+    re.IGNORECASE,
+)
+
+
+def _has_contact_medium(lead: LeadBusiness) -> bool:
+    """Return True if there is at least one practical contact/reach channel."""
+    if lead.phone or lead.email or lead.google_maps_url:
+        return True
+    if lead.social_links:
+        return True
+    if lead.source_url and _is_directory_or_social(lead.source_url):
+        return True
+    return False
+
+
+def _name_from_search_result(title: str | None, url: str) -> str | None:
+    """Best-effort business name extraction from a real search result title."""
+    if not title:
+        title = ""
+
+    name = title.strip()
+    name = re.sub(r"\s+-\s+Updated\s+.*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+\|\s+.*$", "", name)
+    name = re.sub(r"\s+[\-\u2013\u2014]\s+.*$", "", name)
+
+    generic_prefixes = ("contact us - ", "locations - ", "location - ", "contact - ")
+    lowered = name.lower()
+    for prefix in generic_prefixes:
+        if lowered.startswith(prefix):
+            name = name[len(prefix):].strip()
+            break
+    name = re.sub(r"^contact\s+(?!us\b)", "", name, flags=re.IGNORECASE).strip()
+
+    generic_names = {
+        "contact us", "locations", "location", "contact", "local gyms",
+        "top 10 best gyms", "best gyms", "gym in manhattan",
+    }
+    if not name or name.lower() in generic_names or name.lower().startswith("gym in "):
+        parsed = urlparse(url)
+        domain = parsed.netloc.removeprefix("www.")
+        if not domain:
+            return None
+        label = domain.split(".")[0]
+        name = re.sub(r"[-_]+", " ", label).title()
+
+    # Remove common SEO suffixes without destroying business names.
+    name = re.sub(r"\s+-\s+(Yelp|Facebook|Instagram|LinkedIn).*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+in\s+New York.*$", "", name, flags=re.IGNORECASE)
+    name = name.strip(" -|,")
+    return name or None
+
+
+def _is_low_quality_business_result(chunk: EvidenceChunk, name: str) -> bool:
+    """Filter listicles, social posts, search pages, and generic discussion pages."""
+    parsed = urlparse(chunk.url.lower())
+    domain = parsed.netloc.removeprefix("www.")
+    path = parsed.path.lower()
+    text = f"{chunk.title or ''} {chunk.snippet or ''}".lower()
+    lowered_name = name.lower()
+
+    bad_name_fragments = (
+        "top 10", "best gyms", "fastest way", "pay-as-you-go", "near times square",
+        "google nyc gym", "local gyms", "reddit", "what to do", "find gyms you love",
+    )
+    if any(fragment in lowered_name for fragment in bad_name_fragments):
+        return True
+
+    if domain in {"facebook.com", "tiktok.com", "reddit.com"}:
+        if "/groups/" in path or "/posts/" in path or "/discover/" in path or "/r/" in path:
+            return True
+
+    if domain == "yelp.com" and path.startswith("/search"):
+        return True
+
+    if any(fragment in text for fragment in ("top 10 best", "best gyms in", "reddit", "discussion")):
+        return True
+
+    return False
+
+
+def _fallback_extract_from_search_chunks(
+    chunks: list[EvidenceChunk],
+    category: str,
+) -> list[ExtractedBusiness]:
+    """Fallback when the LLM extraction returns no businesses.
+
+    This still uses real search data only. It does not invent businesses; it
+    pulls names, contact details, and URLs from retrieved snippets.
+    """
+    businesses: list[ExtractedBusiness] = []
+    for chunk in chunks:
+        name = _name_from_search_result(chunk.title, chunk.url)
+        if not name:
+            continue
+        if _is_low_quality_business_result(chunk, name):
+            continue
+
+        text = f"{chunk.title or ''}\n{chunk.snippet or ''}"
+        phone = None
+        email = None
+        address = None
+
+        phone_match = _PHONE_RE.search(text)
+        if phone_match:
+            phone = phone_match.group(0)
+
+        email_match = _EMAIL_RE.search(text)
+        if email_match:
+            email = email_match.group(0)
+
+        address_match = _ADDRESS_RE.search(text)
+        if address_match:
+            address = address_match.group(0).strip(" ,")
+
+        website_url = None
+        social_links: list[str] = []
+        if _is_directory_or_social(chunk.url):
+            social_links.append(chunk.url)
+        else:
+            website_url = chunk.url
+
+        has_contact_signal = bool(phone or email or address)
+        is_direct_site = bool(website_url)
+        is_business_directory_listing = "yelp.com/biz/" in chunk.url.lower()
+        if not (has_contact_signal or is_direct_site or is_business_directory_listing):
+            continue
+
+        businesses.append(
+            ExtractedBusiness(
+                business_name=name,
+                category=category,
+                address=address,
+                phone=phone,
+                email=email,
+                website_url=website_url,
+                social_links=social_links,
+                source_url=chunk.url,
+            )
+        )
+
+    return _deduplicate(businesses)
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -619,6 +768,23 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         errors.append(f"Business extraction failed: {str(e)}")
 
     if not extracted_data or not extracted_data.businesses:
+        fallback_businesses = _fallback_extract_from_search_chunks(chunks, category)
+        if fallback_businesses:
+            errors.append("LLM extraction returned no businesses; used deterministic extraction from real search snippets.")
+            extracted_data = ExtractedBusinessList(businesses=fallback_businesses)
+        else:
+            return LeadSearchResponse(
+                leads=[], total_found=0, total_without_website=0,
+                draft_email=LeadDraftEmail(
+                    to_business="Prospect",
+                    subject="Website proposal",
+                    body="Hi there,\n\nI noticed you have a great business but don't have a website yet...",
+                ),
+                search_query_used=queries[0],
+                errors=errors + ["Could not extract any businesses from the search results."],
+            )
+
+    if not extracted_data.businesses:
         return LeadSearchResponse(
             leads=[], total_found=0, total_without_website=0,
             draft_email=LeadDraftEmail(
@@ -658,7 +824,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     async def process_business(eb: ExtractedBusiness) -> LeadBusiness:
         website_url = eb.website_url
         has_website = False
-        social_links = list(eb.social_links)
+        social_links = list(eb.social_links or [])
         confidence = 0.8
 
         # Move any social/directory URLs out of website_url
@@ -705,6 +871,9 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             link for link in social_links
             if _is_directory_or_social(link)
         ]
+        if eb.source_url and _is_directory_or_social(eb.source_url):
+            clean_socials.append(eb.source_url)
+
         # Deduplicate social links
         seen_socials: set[str] = set()
         deduped_socials: list[str] = []
@@ -732,10 +901,22 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     tasks = [process_business(eb) for eb in raw_businesses]
 
     leads = list(await asyncio.gather(*tasks))
+    leads = [lead for lead in leads if _has_contact_medium(lead)]
+
+    if not leads:
+        return LeadSearchResponse(
+            leads=[], total_found=0, total_without_website=0,
+            draft_email=LeadDraftEmail(
+                to_business="Prospect",
+                subject="Website proposal",
+                body="Hi there,\n\nI noticed you have a great business but couldn't find a contact channel yet...",
+            ),
+            search_query_used=queries[0],
+            errors=errors + ["Businesses were found, but none had a usable contact medium."],
+        )
 
     # Sort: no-website first, then by confidence descending
     leads.sort(key=lambda x: (x.has_website, -x.confidence_no_website))
-    leads = leads[:request.max_results]
 
     total_without_website = sum(1 for lead in leads if not lead.has_website)
 
@@ -750,7 +931,8 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         service_desc=request.service_description,
     )
 
-    # 5. Save all processed leads to SQLite database
+    # 5. Save all processed leads to SQLite database, even if the API response
+    # is limited for display.
     if leads:
         try:
             save_leads(leads, location)

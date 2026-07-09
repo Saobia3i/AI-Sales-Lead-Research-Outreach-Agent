@@ -18,13 +18,15 @@ The project has two main workflows:
    - Performs real web search using Firecrawl Search and DDGS.
    - Extracts real businesses from search snippets using Groq structured output.
    - Verifies whether each business has an official website.
+   - Prioritizes businesses without official websites.
+   - Keeps leads that have at least one contact medium, such as phone, email, social page, Maps/listing URL, or source directory page.
    - Stores discovered leads in SQLite.
    - Excludes already-stored businesses from future scans for the same category and location.
    - Shows saved leads in the frontend Lead Database dashboard with filters, delete, and CSV export.
 
 ## Technology Stack
 
-- **Backend**: FastAPI, Pydantic, LangGraph, Groq, Firecrawl, DDGS, httpx, SQLite.
+- **Backend**: FastAPI, Pydantic, LangGraph, Groq, OpenRouter fallback, Firecrawl, DDGS, httpx, SQLite.
 - **Frontend**: Next.js 14, React, TypeScript, Material UI.
 - **Database**: SQLite database at `sales_agent/backend/leads.db`.
 - **Search providers**:
@@ -47,9 +49,38 @@ Important behavior:
   - Exact example: `"Gyms" "New York" facebook page`
   - Fuzzy example: `Gyms New York facebook page`
 - The system does not fabricate businesses. Businesses are extracted from real search result snippets.
+- The main target is businesses without official websites.
+- A lead does not need both email and phone; one contact medium is enough.
 - For every extracted business, website verification uses Firecrawl Search/Scrape and falls back where needed.
 - Social and directory URLs such as Facebook, Instagram, Yelp, TripAdvisor, YellowPages, Google Maps, etc. are not counted as official websites.
 - Website builders such as Wix, WordPress, Squarespace, and Weebly do count as websites.
+
+## LLM Provider Behavior
+
+The LLM provider lives in:
+
+`sales_agent/backend/app/providers/llm.py`
+
+Structured calls use this order:
+
+1. Groq primary via `langchain_groq.ChatGroq`.
+2. OpenRouter fallback via `https://openrouter.ai/api/v1/chat/completions`.
+
+Fallback triggers when:
+
+- Groq API key is missing.
+- Groq package/import fails.
+- Groq request fails.
+- Groq returns no structured output.
+
+OpenRouter is configured with:
+
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL`
+- `OPENROUTER_SITE_URL`
+- `OPENROUTER_APP_NAME`
+
+OpenRouter responses are validated against the same Pydantic schema requested by the caller.
 
 ## Lead Database Behavior
 
@@ -146,6 +177,10 @@ Backend `.env` should include:
 ```env
 GROQ_API_KEY=your-groq-api-key
 GROQ_MODEL=llama-3.3-70b-versatile
+OPENROUTER_API_KEY=your-openrouter-api-key
+OPENROUTER_MODEL=openai/gpt-4o-mini
+OPENROUTER_SITE_URL=http://localhost:3000
+OPENROUTER_APP_NAME=AI Sales Lead Research Agent
 FIRECRAWL_API_KEY=your-firecrawl-api-key
 CORS_ORIGINS=http://localhost:3000
 ```
@@ -159,7 +194,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 Important:
 
 - `config.py` loads `.env` relative to the backend working directory.
-- Start the backend from `sales_agent/backend` so `FIRECRAWL_API_KEY` and `GROQ_API_KEY` load correctly.
+- Start the backend from `sales_agent/backend` so `FIRECRAWL_API_KEY`, `GROQ_API_KEY`, and `OPENROUTER_API_KEY` load correctly.
 
 ## Local Development
 

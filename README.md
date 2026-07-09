@@ -19,13 +19,15 @@ The lead discovery pipeline turns the app into a persistent local lead database:
 - Aggregate Firecrawl Search and DDGS results.
 - Extract real businesses from search snippets using Groq structured output.
 - Verify whether each business has an official website.
+- Prioritize businesses without official websites.
+- Keep leads that have at least one contact medium, such as phone, email, social page, Maps/listing URL, or source directory page.
 - Store discovered leads in SQLite.
 - Exclude already-stored businesses in later scans for the same category and location.
 - View, filter, delete, and export saved leads from the frontend Lead Database tab.
 
 ## Tech Stack
 
-- **Backend**: FastAPI, Pydantic, LangGraph, Groq, Firecrawl, DDGS, httpx, SQLite.
+- **Backend**: FastAPI, Pydantic, LangGraph, Groq, OpenRouter fallback, Firecrawl, DDGS, httpx, SQLite.
 - **Frontend**: Next.js 14, React, TypeScript, Material UI.
 - **Database**: SQLite at `sales_agent/backend/leads.db`.
 
@@ -43,6 +45,15 @@ The discovery query set uses both exact and fuzzy searches:
 - Fuzzy query example: `Gyms New York facebook page`
 
 The app does not invent businesses. The LLM extracts business records from retrieved search snippets.
+
+## LLM Providers
+
+Structured LLM calls use Groq first. If Groq is unavailable, fails, or returns no structured result, the backend falls back to OpenRouter.
+
+Default provider order:
+
+1. Groq: `GROQ_API_KEY` + `GROQ_MODEL`
+2. OpenRouter fallback: `OPENROUTER_API_KEY` + `OPENROUTER_MODEL`
 
 ## Lead Database
 
@@ -87,6 +98,10 @@ Create `sales_agent/backend/.env`:
 ```env
 GROQ_API_KEY=your-groq-api-key
 GROQ_MODEL=llama-3.3-70b-versatile
+OPENROUTER_API_KEY=your-openrouter-api-key
+OPENROUTER_MODEL=openai/gpt-4o-mini
+OPENROUTER_SITE_URL=http://localhost:3000
+OPENROUTER_APP_NAME=AI Sales Lead Research Agent
 FIRECRAWL_API_KEY=your-firecrawl-api-key
 CORS_ORIGINS=http://localhost:3000
 ```
@@ -183,6 +198,6 @@ npx tsc --noEmit --incremental false
 
 ## Notes
 
-- Firecrawl and Groq require valid API keys.
+- Firecrawl and at least one LLM provider key are required for full lead discovery. Groq is primary; OpenRouter is fallback.
 - If search returns no leads, check the warning shown under Search Parameters in the frontend.
 - If the backend is restarted from the wrong directory, `.env` may not load and Firecrawl/Groq calls can fail.

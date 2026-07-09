@@ -581,8 +581,8 @@ export default function Home() {
               Find Offline Businesses & <span style={{ color: "#0ea5e9" }}>Contact Them Instantly</span>
             </Typography>
             <Typography variant="body1" color="text.secondary" sx={{ maxWidth: 700, mx: "auto" }}>
-              Locate businesses without websites, extract emails, social pages, or phone numbers, and
-              generate custom messages for WhatsApp, DMs, or phone scripts in one click.
+              Locate businesses without websites, capture at least one contact medium, and
+              generate custom outreach for the channels found.
             </Typography>
           </Box>
 
@@ -1162,6 +1162,7 @@ export default function Home() {
                                   Social Page
                                 </Button>
                               )}
+
                             </Box>
                           </Paper>
                         );

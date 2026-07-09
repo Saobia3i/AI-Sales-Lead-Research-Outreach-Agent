@@ -205,7 +205,7 @@ class LeadSearchRequest(BaseModel):
     sender_name: str = "Your Name"
     sender_company: str = "Your Company"
     service_description: str = "We build professional, affordable websites for small businesses"
-    max_results: int = Field(default=15, ge=1, le=50)
+    max_results: int = Field(default=15, ge=1, le=50)  # Kept for API compatibility; scanner returns all valid leads.
     page: int = Field(default=1, ge=1)
 
 

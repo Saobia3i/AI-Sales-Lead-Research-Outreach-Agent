@@ -9,6 +9,10 @@ class Settings(BaseSettings):
 
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
+    openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
+    openrouter_model: str = Field(default="openai/gpt-4o-mini", alias="OPENROUTER_MODEL")
+    openrouter_site_url: str | None = Field(default=None, alias="OPENROUTER_SITE_URL")
+    openrouter_app_name: str = Field(default="AI Sales Lead Research Agent", alias="OPENROUTER_APP_NAME")
     default_budget_usd: float = Field(default=0.50, alias="DEFAULT_BUDGET_USD")
     max_search_calls_per_run: int = Field(default=6, alias="MAX_SEARCH_CALLS_PER_RUN")
     research_cache_ttl_seconds: int = Field(default=172800, alias="RESEARCH_CACHE_TTL_SECONDS")
