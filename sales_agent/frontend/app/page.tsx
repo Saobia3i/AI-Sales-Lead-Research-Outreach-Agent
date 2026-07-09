@@ -200,18 +200,55 @@ const theme = createTheme({
   },
 });
 
-const SUGGESTIONS = ["Beauty Salons", "Tutoring Centers", "Gyms", "Cafes", "Dentists", "Mechanics"];
-const LOCATION_SUGGESTIONS = ["New York", "London", "Los Angeles", "Birmingham", "Chicago", "Manchester"];
-const US_STATES = [
-  "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", 
-  "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", 
-  "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", 
-  "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", 
-  "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", 
-  "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", 
-  "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", 
-  "Wisconsin", "Wyoming"
-];
+const SUGGESTIONS = ["Beauty Salons", "Tutoring Centers", "Gyms", "Cafes", "Dentists", "Mechanics", "Restaurants", "Bakeries", "Plumbers", "Electricians"];
+const LOCATION_SUGGESTIONS = ["New York", "London", "Tokyo", "Dubai", "Sydney", "Berlin", "Toronto", "Mumbai", "São Paulo", "Paris"];
+const GLOBAL_REGIONS: Record<string, string[]> = {
+  "🇺🇸 USA": [
+    "New York", "Los Angeles", "Chicago", "Houston", "Miami", "San Francisco",
+    "Seattle", "Boston", "Dallas", "Atlanta", "Denver", "Phoenix",
+  ],
+  "🇬🇧 UK": [
+    "London", "Manchester", "Birmingham", "Leeds", "Glasgow", "Edinburgh",
+    "Bristol", "Liverpool", "Sheffield", "Cardiff",
+  ],
+  "🇨🇦 Canada": [
+    "Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa", "Edmonton",
+  ],
+  "🇦🇺 Australia": [
+    "Sydney", "Melbourne", "Brisbane", "Perth", "Adelaide", "Gold Coast",
+  ],
+  "🇮🇳 India": [
+    "Mumbai", "Delhi", "Bangalore", "Hyderabad", "Chennai", "Pune", "Kolkata",
+  ],
+  "🇦🇪 UAE": [
+    "Dubai", "Abu Dhabi", "Sharjah",
+  ],
+  "🇩🇪 Germany": [
+    "Berlin", "Munich", "Hamburg", "Frankfurt", "Cologne",
+  ],
+  "🇫🇷 France": [
+    "Paris", "Lyon", "Marseille", "Toulouse", "Nice",
+  ],
+  "🇯🇵 Japan": [
+    "Tokyo", "Osaka", "Kyoto", "Yokohama", "Nagoya",
+  ],
+  "🇧🇷 Brazil": [
+    "São Paulo", "Rio de Janeiro", "Brasília", "Salvador", "Curitiba",
+  ],
+  "🇧🇩 Bangladesh": [
+    "Dhaka", "Chittagong", "Sylhet", "Rajshahi", "Khulna", "Comilla",
+  ],
+  "🇿🇦 South Africa": [
+    "Johannesburg", "Cape Town", "Durban", "Pretoria",
+  ],
+  "🇳🇬 Nigeria": [
+    "Lagos", "Abuja", "Port Harcourt", "Ibadan",
+  ],
+  "🇸🇬 Singapore": ["Singapore"],
+  "🇲🇾 Malaysia": ["Kuala Lumpur", "Penang", "Johor Bahru"],
+  "🇵🇭 Philippines": ["Manila", "Cebu", "Davao"],
+  "🇵🇰 Pakistan": ["Karachi", "Lahore", "Islamabad"],
+};
 
 export default function Home() {
   const [category, setCategory] = useState("Beauty Salons");
@@ -660,14 +697,14 @@ export default function Home() {
                           ))}
                         </Box>
                         <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
-                          <InputLabel id="us-state-label" sx={{ color: "rgba(255,255,255,0.7)" }}>Or Select US State Preset</InputLabel>
+                          <InputLabel id="global-region-label" sx={{ color: "rgba(255,255,255,0.7)" }}>Or Select City Preset</InputLabel>
                           <Select
-                            labelId="us-state-label"
-                            value={US_STATES.includes(location.replace(", USA", "")) ? location.replace(", USA", "") : ""}
-                            label="Or Select US State Preset"
+                            labelId="global-region-label"
+                            value=""
+                            label="Or Select City Preset"
                             onChange={(e) => {
                               if (e.target.value) {
-                                setLocation(e.target.value + ", USA");
+                                setLocation(e.target.value as string);
                               }
                             }}
                             sx={{
@@ -679,11 +716,19 @@ export default function Home() {
                                 borderColor: "rgba(255, 255, 255, 0.2)",
                               },
                             }}
+                            MenuProps={{ PaperProps: { sx: { maxHeight: 350 } } }}
                           >
                             <MenuItem value=""><em>None (Custom location)</em></MenuItem>
-                            {US_STATES.map((state) => (
-                              <MenuItem key={state} value={state}>{state}</MenuItem>
-                            ))}
+                            {Object.entries(GLOBAL_REGIONS).map(([region, cities]) => [
+                              <MenuItem key={region} disabled sx={{ fontWeight: 700, opacity: "1 !important", fontSize: "0.85rem", color: "#0ea5e9", mt: 0.5 }}>
+                                {region}
+                              </MenuItem>,
+                              ...cities.map((city) => (
+                                <MenuItem key={`${region}-${city}`} value={city} sx={{ pl: 3 }}>
+                                  {city}
+                                </MenuItem>
+                              )),
+                            ])}
                           </Select>
                         </FormControl>
                       </Grid>
@@ -1044,7 +1089,34 @@ export default function Home() {
                               <Typography variant="subtitle1" sx={{ fontWeight: 700, pr: 1 }}>
                                 {lead.business_name}
                               </Typography>
-                              <Box>
+                              <Box sx={{ display: "flex", gap: 0.5, alignItems: "center" }}>
+                                {lead.confidence_no_website > 0 && (
+                                  <Chip
+                                    label={`${Math.round(lead.confidence_no_website * 100)}%`}
+                                    size="small"
+                                    sx={{
+                                      height: 18,
+                                      fontSize: "0.6rem",
+                                      fontWeight: "bold",
+                                      bgcolor: lead.confidence_no_website >= 0.9
+                                        ? "rgba(16, 185, 129, 0.15)"
+                                        : lead.confidence_no_website >= 0.7
+                                        ? "rgba(245, 158, 11, 0.15)"
+                                        : "rgba(244, 63, 94, 0.15)",
+                                      color: lead.confidence_no_website >= 0.9
+                                        ? "#10b981"
+                                        : lead.confidence_no_website >= 0.7
+                                        ? "#f59e0b"
+                                        : "#f43f5e",
+                                      border: "1px solid",
+                                      borderColor: lead.confidence_no_website >= 0.9
+                                        ? "rgba(16, 185, 129, 0.3)"
+                                        : lead.confidence_no_website >= 0.7
+                                        ? "rgba(245, 158, 11, 0.3)"
+                                        : "rgba(244, 63, 94, 0.3)",
+                                    }}
+                                  />
+                                )}
                                 {lead.has_website ? (
                                   <Chip
                                     label="Has Website"

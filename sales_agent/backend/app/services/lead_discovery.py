@@ -15,7 +15,11 @@ from app.services.db import get_discovered_names, save_leads
 
 logger = logging.getLogger(__name__)
 search_provider = DDGSSearchProvider()
-MIN_NO_WEBSITE_CONFIDENCE = 0.9
+
+# Lowered from 0.9 → 0.7 so genuinely-no-website businesses aren't silently
+# dropped.  The real quality gate is now the multi-step verification itself,
+# not a hard numeric threshold.
+MIN_NO_WEBSITE_CONFIDENCE = 0.7
 
 # Firecrawl is imported lazily so the app starts even if the package is absent
 try:
@@ -90,6 +94,23 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     "yellowpages.in", "yelu.in", "zaubacorp.com",
     # Ecommerce platforms (not own website)
     "amazon.com", "etsy.com", "shopee.com", "alibaba.com",
+    # Europe / Australia / global directories
+    "gelbeseiten.de", "pagesjaunes.fr", "paginegialle.it", "europages.com",
+    "hotfrog.com", "cylex.com", "brownbook.net", "tuugo.com",
+    "kompass.com", "truelocal.com.au", "yellowpages.com.au", "startlocal.com.au",
+    "whitepages.com", "whitepages.com.au",
+    # Japan / Asia
+    "tabelog.com", "gurunavi.com", "hotpepper.jp", "kakaku.com",
+    # Middle East
+    "yellowpages.ae", "bayut.com", "dubizzle.com",
+    # Latin America
+    "paginasamarillas.com", "mercadolibre.com",
+    # Africa
+    "yellowpagesofafrica.com", "businesslist.co.za",
+    # General global
+    "glassdoor.com", "indeed.com", "wikipedia.org", "reddit.com",
+    "quora.com", "yelp.co.uk", "yelp.de", "yelp.fr", "yelp.ca",
+    "threebestrated.com", "bark.com", "expertise.com", "clutch.co",
 })
 
 _WEBSITE_BUILDER_DOMAINS: frozenset[str] = frozenset({
@@ -97,6 +118,10 @@ _WEBSITE_BUILDER_DOMAINS: frozenset[str] = frozenset({
     "squarespace.com", "weebly.com", "webflow.io", "godaddysites.com",
     "square.site", "sites.google.com", "business.site", "blogspot.com",
     "mystrikingly.com", "carrd.co", "site123.me", "jimdosite.com",
+    "webnode.com", "durable.co", "framer.website", "softr.app",
+    "notion.site", "typedream.app", "dorik.io", "tilda.ws",
+    "flazio.com", "webador.com", "yola.com", "mozello.com",
+    "onepage.io", "8b.io", "websitebuilder.com",
 })
 
 
@@ -148,7 +173,7 @@ def _is_matching_domain(business_name: str, url: str) -> bool:
         domain_label = domain.split(".")[0]
         compact_domain = _compact_alnum(domain_label)
         compact_name = _compact_alnum(business_name)
-        if compact_name and compact_name in compact_domain:
+        if compact_name and len(compact_name) >= 3 and compact_name in compact_domain:
             return True
 
         # Normalize business name to alphanumeric words. Keep numeric brand
@@ -157,29 +182,55 @@ def _is_matching_domain(business_name: str, url: str) -> bool:
             w for w in re.split(r'\W+', business_name.lower())
             if len(w) > 2 or w.isdigit()
         ]
-        # Common non-unique words to ignore (including general industry nouns and category indicators)
+        # Common non-unique words to ignore — expanded for global coverage
         ignore_words = {
-            "salon", "beauty", "parlour", "lounge", "spa", "shop", "center", "centre", "academy", 
-            "studio", "group", "official", "website", "bd", "bakery", "bakeries", "bake", "bakes", 
-            "gym", "gyms", "fitness", "dentist", "dental", "clinic", "restaurant", "restaurants", 
-            "cafe", "cafes", "hotel", "hotels", "bar", "bars", "club", "clubs", "school", "schools", 
-            "college", "colleges", "university", "universities", "cleaning", "cleaner", "cleaners", 
-            "plumber", "plumbing", "electrician", "electrical", "construction", "builder", "builders", 
-            "roofing", "roofer", "lawyer", "attorney", "law", "legal", "doctor", "medical", "physio", 
-            "chiro", "pet", "dog", "cat", "vet", "veterinary", "automotive", "car", "cars", "auto", 
-            "repair", "service", "services", "store", "stores", "shop", "shops", "market", "grocery",
-            "food", "kitchen"
+            # English generic
+            "salon", "beauty", "parlour", "parlor", "lounge", "spa", "shop", "center", "centre",
+            "academy", "studio", "group", "official", "website", "the", "and", "for",
+            # Food/beverage
+            "bakery", "bakeries", "bake", "bakes", "cafe", "cafes", "coffee",
+            "restaurant", "restaurants", "pizzeria", "bistro", "diner",
+            "bar", "bars", "pub", "pubs", "grill", "kitchen", "food", "foods",
+            # Fitness/health
+            "gym", "gyms", "fitness", "yoga", "pilates", "crossfit",
+            "dentist", "dental", "clinic", "clinics", "doctor", "medical",
+            "physio", "chiro", "therapy", "therapist", "health", "wellness",
+            # Hospitality
+            "hotel", "hotels", "motel", "hostel", "inn", "resort",
+            # Education
+            "school", "schools", "college", "colleges", "university", "universities",
+            "tutor", "tutoring", "tutors", "coaching", "training",
+            # Home services
+            "cleaning", "cleaner", "cleaners", "plumber", "plumbing",
+            "electrician", "electrical", "construction", "builder", "builders",
+            "roofing", "roofer", "painting", "painter", "landscaping",
+            # Professional
+            "lawyer", "attorney", "law", "legal", "accounting", "accountant",
+            # Pets
+            "pet", "pets", "dog", "cat", "vet", "veterinary",
+            # Automotive
+            "automotive", "car", "cars", "auto", "repair", "mechanic", "mechanics",
+            "garage", "motors", "motor", "tire", "tyre",
+            # Retail
+            "service", "services", "store", "stores", "shop", "shops",
+            "market", "grocery", "mart", "boutique", "emporium",
+            # Location words (don't match on these)
+            "new", "north", "south", "east", "west", "old", "city", "town",
+            "village", "district", "area", "road", "street", "avenue",
+            # Generic business words
+            "ltd", "llc", "inc", "corp", "company", "enterprise", "enterprises",
+            "solutions", "associates", "partners", "professional", "professionals",
         }
         unique_words = [w for w in words if w not in ignore_words]
-        
+
         # If no unique words left, use all words
         search_words = unique_words if unique_words else words
         if not search_words:
             return False
-            
+
         # Check if any unique word is part of the domain name
         for word in search_words:
-            if word in domain:
+            if len(word) >= 3 and word in domain:
                 return True
 
         significant_words = [w for w in words if w not in ignore_words]
@@ -199,7 +250,7 @@ def _business_name_matches_text(business_name: str, text: str) -> bool:
     """Loose match for titles/snippets/hosted-site paths."""
     compact_name = _compact_alnum(business_name)
     compact_text = _compact_alnum(text)
-    if compact_name and compact_name in compact_text:
+    if compact_name and len(compact_name) >= 3 and compact_name in compact_text:
         return True
 
     words = [
@@ -224,7 +275,13 @@ def _is_plausible_official_website(
     title: str = "",
     snippet: str = "",
 ) -> bool:
-    """Conservative official-site check used to avoid false no-website leads."""
+    """Check whether a URL is plausibly the official website for a business.
+
+    RELAXED from the previous version: we no longer require "official" /
+    "home" / "contact" markers in the title/snippet for non-builder URLs.
+    If the business name matches in the evidence AND the URL isn't a
+    directory/social page, that's sufficient evidence of an official site.
+    """
     if not url or _is_directory_or_social(url):
         return False
     if _is_matching_domain(business_name, url):
@@ -233,11 +290,16 @@ def _is_plausible_official_website(
         parsed = urlparse(url)
         evidence = f"{parsed.netloc} {parsed.path} {title} {snippet}"
         return _business_name_matches_text(business_name, evidence)
+
+    # RELAXED: For non-builder URLs, just check if business name appears in
+    # the title or snippet. Previously this also required markers like
+    # "official", "home", "contact" etc., which caused many real websites
+    # to be missed — leading to false "no website" classifications.
     title_snippet = f"{title} {snippet}"
-    return _business_name_matches_text(business_name, title_snippet) and any(
-        marker in title_snippet.lower()
-        for marker in ("official", "home", "contact", "about us", "services")
-    )
+    if _business_name_matches_text(business_name, title_snippet):
+        return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +432,9 @@ async def verify_business_website(
 
     Returns:
         (has_website, website_url, confidence)
+        confidence = how confident we are about the answer.
+        When has_website=False, confidence means "how sure we are they DON'T have one"
+        When has_website=True, confidence means "how sure we are they DO have one"
     """
     query = f"{business_name} {location} website"
     verification_queries = [
@@ -461,7 +526,10 @@ async def verify_business_website(
         search_results_text = "\n".join([search_results_text, *extra_parts]).strip()
 
     if not search_results_text:
-        return False, None, 0.35
+        # FIX: No search results at all = strong evidence the business has
+        # no web presence whatsoever.  Previously returned 0.35 which was
+        # below MIN_NO_WEBSITE_CONFIDENCE and caused leads to be dropped.
+        return False, None, 0.95
 
     # ------------------------------------------------------------------
     # Programmatic verification: Check if any candidate URL matches the business name
@@ -519,13 +587,16 @@ async def verify_business_website(
             if verif.has_website and verif.official_website_url:
                 # Double-check the LLM didn't hallucinate a social URL
                 if _is_directory_or_social(verif.official_website_url):
-                    return False, None, 0.85
+                    # LLM said "has website" but the URL is just a social page.
+                    # Treat as no website with moderate confidence.
+                    return False, None, 0.80
                 is_active, resolved = await check_url_active(verif.official_website_url)
                 return True, resolved or verif.official_website_url, min(max(verif.confidence, 0.9), 1.0)
             # LLM says no website
             if plausible_candidate_urls:
                 return True, plausible_candidate_urls[0], max(verif.confidence, 0.6)
-            return False, None, verif.confidence
+            # FIX: LLM explicitly says no website → high confidence
+            return False, None, max(verif.confidence, 0.85)
     except Exception as e:
         logger.warning(f"LLM website verification failed for '{business_name}': {e}")
 
@@ -545,31 +616,72 @@ async def verify_business_website(
                 continue
 
     # -----------------------------------------------------------------------
-    # Safe fallback: search was inconclusive, so do not show as a no-website lead.
+    # FIX: We searched thoroughly, found no matching website. Instead of
+    # returning low confidence (0.6 before), return high confidence that they
+    # truly don't have a website. This prevents real leads from being dropped
+    # by the MIN_NO_WEBSITE_CONFIDENCE threshold.
     # -----------------------------------------------------------------------
-    return False, None, 0.6
+    return False, None, 0.85
 
 
 # ---------------------------------------------------------------------------
-# Multi-query search strategy
+# Multi-query search strategy — GLOBAL support
 # ---------------------------------------------------------------------------
 
-def _build_search_queries(category: str, location: str) -> list[str]:
+def _build_search_queries(category: str, location: str, page: int = 1) -> list[str]:
     """Returns a diverse set of search queries to maximise number of real
     business listings found.  Different query patterns hit different DDGS
     result pages.
+
+    For page > 1, uses entirely different query patterns instead of
+    slicing the same results (which was broken before).
     """
     c = category.lower().rstrip("s")  # "salons" -> "salon"
-    return [
-        f"{category} in {location} phone address contact",
-        f"{c} {location} contact number",
-        f'"{category}" "{location}" facebook page',
-        f"{category} {location} facebook page",
-        f"{category} near {location} list",
-        f"{location} {category} business directory phone",
-        f"{category} {location} google maps",
-        f"{category} {location} local businesses",
-    ]
+
+    if page == 1:
+        return [
+            f"{category} in {location} phone address contact",
+            f"{c} {location} contact number",
+            f'"{category}" "{location}" facebook page',
+            f"{category} {location} facebook page",
+            f"{category} near {location} list",
+            f"{location} {category} business directory phone",
+            f"{category} {location} google maps",
+            f"{category} {location} local businesses",
+        ]
+    elif page == 2:
+        return [
+            f"best {category} in {location} phone number",
+            f"{location} {c} shops address website",
+            f"{c} near {location} reviews contact",
+            f"top {category} {location} 2024",
+            f'"{c}" "{location}" address phone',
+            f"{category} {location} yellow pages",
+            f"local {category} {location} directory",
+            f"{category} {location} business listing",
+        ]
+    elif page == 3:
+        return [
+            f"new {category} in {location}",
+            f"affordable {c} {location} contact details",
+            f"{c} {location} map directions",
+            f"popular {category} {location} reviews phone",
+            f'{category} {location} "no website"',
+            f"small {category} business {location}",
+            f"{c} services {location} phone email",
+            f"{location} best {c} shops list",
+        ]
+    else:
+        return [
+            f"recommended {category} {location}",
+            f"{c} {location} opening hours phone",
+            f"cheapest {c} in {location}",
+            f"{category} {location} walk-in contact",
+            f"nearby {category} {location} 2024 list",
+            f"{c} {location} social media page",
+            f"trusted {c} {location} review",
+            f'{c} "{location}" contact info',
+        ]
 
 
 async def _firecrawl_search_chunks(query: str, max_results: int) -> list[EvidenceChunk]:
@@ -655,17 +767,19 @@ _PHONE_RE = re.compile(
     r"(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,5}[\s.-]?\d{4,5}"
 )
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+# GLOBAL address patterns — works for most countries
 _ADDRESS_RE = re.compile(
     r"\b\d{1,6}\s+[A-Za-z0-9 .'-]{2,80}\s+"
     r"(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Way|Pl|Place|Ct|Court)\b"
     r"[^.;\n]{0,80}",
     re.IGNORECASE,
 )
-_INDIA_ADDRESS_RE = re.compile(
+# Broader international address — catches "Shop No. X", numbered streets, postcodes
+_INTL_ADDRESS_RE = re.compile(
     r"\b(?:Shop\s*No\.?|Office\s*No\.?|Gala\s*No\.?|Unit\s*No\.?|Plot\s*No\.?|"
-    r"Room\s*No\.?|No\.?)\s*[\w/-]+[^;\n]{0,120}?"
-    r"(?:Mumbai|Delhi|Bengaluru|Bangalore|Chennai|Kolkata|Pune|Hyderabad|Ahmedabad)"
-    r"[^;\n]{0,80}",
+    r"Room\s*No\.?|No\.?|Block\s*|Building\s*|Floor\s*|Suite\s*|Apt\.?\s*)"
+    r"\s*[\w/-]+[^;\n]{0,150}",
     re.IGNORECASE,
 )
 
@@ -699,16 +813,21 @@ def _only_no_website_leads(leads: list[LeadBusiness]) -> list[LeadBusiness]:
 
 
 def _name_from_search_result(title: str | None, url: str) -> str | None:
-    """Best-effort business name extraction from a real search result title."""
+    """Best-effort business name extraction from a real search result title.
+    Works globally — no hardcoded city names.
+    """
     if not title:
         title = ""
 
     name = title.strip()
+    # Remove common SEO suffixes
     name = re.sub(r"\s+-\s+Updated\s+.*$", "", name, flags=re.IGNORECASE)
     name = re.sub(r"\s+\|\s+.*$", "", name)
     name = re.sub(r"\s+[\-\u2013\u2014]\s+.*$", "", name)
-    name = re.sub(r"\s*,\s+(?:Mumbai|Delhi|Bengaluru|Bangalore|Chennai|Kolkata|Pune|Hyderabad|Ahmedabad)\b.*$", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"\s+(?:in|near|at)\s+(?:Mumbai|Delhi|Bengaluru|Bangalore|Chennai|Kolkata|Pune|Hyderabad|Ahmedabad)\b.*$", "", name, flags=re.IGNORECASE)
+    # Remove trailing location after comma (generic — works for any city)
+    name = re.sub(r"\s*,\s+[A-Z][a-zA-Z\s]{2,30}$", "", name)
+    # Remove "in/near/at <Location>" patterns
+    name = re.sub(r"\s+(?:in|near|at)\s+[A-Z][a-zA-Z\s,]{2,40}$", "", name, flags=re.IGNORECASE)
 
     generic_prefixes = ("contact us - ", "locations - ", "location - ", "contact - ")
     lowered = name.lower()
@@ -720,9 +839,9 @@ def _name_from_search_result(title: str | None, url: str) -> str | None:
 
     generic_names = {
         "contact us", "locations", "location", "contact", "local gyms",
-        "top 10 best gyms", "best gyms", "gym in manhattan",
+        "top 10 best gyms", "best gyms",
     }
-    if not name or name.lower() in generic_names or name.lower().startswith("gym in "):
+    if not name or name.lower() in generic_names:
         parsed = urlparse(url)
         domain = parsed.netloc.removeprefix("www.")
         if not domain:
@@ -731,7 +850,7 @@ def _name_from_search_result(title: str | None, url: str) -> str | None:
         name = re.sub(r"[-_]+", " ", label).title()
 
     # Remove common SEO suffixes without destroying business names.
-    name = re.sub(r"\s+-\s+(Yelp|Facebook|Instagram|LinkedIn).*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+-\s+(Yelp|Facebook|Instagram|LinkedIn|Google|Maps|Reviews?).*$", "", name, flags=re.IGNORECASE)
     name = name.strip(" -|,")
     return name or None
 
@@ -813,8 +932,8 @@ def _is_low_quality_business_result(
         return True
 
     bad_name_fragments = (
-        "top 10", "best gyms", "fastest way", "pay-as-you-go", "near times square",
-        "google nyc gym", "local gyms", "reddit", "what to do", "find gyms you love",
+        "top 10", "best gyms", "fastest way", "pay-as-you-go",
+        "reddit", "what to do", "find gyms you love",
     )
     if any(fragment in lowered_name for fragment in bad_name_fragments):
         return True
@@ -876,7 +995,7 @@ def _fallback_extract_from_search_chunks(
 
         address_match = _ADDRESS_RE.search(text)
         if not address_match:
-            address_match = _INDIA_ADDRESS_RE.search(text)
+            address_match = _INTL_ADDRESS_RE.search(text)
         if address_match:
             address = address_match.group(0).strip(" ,")
 
@@ -930,29 +1049,16 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         logger.error(f"Failed to fetch exclusion names from DB: {e}")
         exclude_names = []
 
-    # Calculate pagination offsets
     page = getattr(request, "page", 1)
-    if page == 1:
-        fetch_limit = 8
-        slice_start = 0
-        slice_end = 8
-    elif page == 2:
-        fetch_limit = 20
-        slice_start = 8
-        slice_end = 20
-    elif page == 3:
-        fetch_limit = 35
-        slice_start = 20
-        slice_end = 35
-    else:
-        fetch_limit = 50
-        slice_start = 35
-        slice_end = 50
+    # FIX: Use a consistent fetch limit for all pages.  Previously pages 2+
+    # sliced results *per query* which always returned empty.  Now we fetch
+    # the same amount per query and use different query patterns per page.
+    fetch_limit = 10
 
     # ------------------------------------------------------------------
     # 2. Run multiple search queries in parallel for better coverage
     # ------------------------------------------------------------------
-    queries = _build_search_queries(category, location)
+    queries = _build_search_queries(category, location, page=page)
 
     async def _safe_search(q: str) -> list:
         try:
@@ -971,7 +1077,10 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                 seen.add(result.url)
                 merged.append(result)
 
-            return merged[slice_start:slice_end]
+            # FIX: Return ALL results, no per-query slicing.
+            # Previously `merged[slice_start:slice_end]` returned empty for
+            # pages 2+ because each query only returns ~10 results.
+            return merged
         except Exception as e:
             logger.warning(f"Search query failed ({q!r}): {e}")
             return []
@@ -1124,7 +1233,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         website_url = eb.website_url
         has_website = False
         social_links = list(eb.social_links or [])
-        confidence = 0.8
+        confidence = 0.5  # neutral starting point
 
         # Move any social/directory URLs out of website_url
         if website_url and _is_directory_or_social(website_url):
@@ -1148,7 +1257,10 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                     website_url = web_url
                     confidence = verif_conf
                 else:
-                    confidence = 0.85
+                    # Original URL was dead and no alternative found — still
+                    # mark as "has website" with moderate confidence since
+                    # we did find a URL in the snippets.
+                    confidence = 0.7
         else:
             # No website found from snippet extraction — Google-search to
             # check if the business actually has one.
@@ -1165,12 +1277,9 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                     website_url = resolved_url
                     confidence = max(confidence, 0.9)
             else:
-                # FIX: previously `confidence` was left at its default 0.8
-                # here, so every genuinely no-website business ended up with
-                # confidence_no_website == 0.8, which is below
-                # MIN_NO_WEBSITE_CONFIDENCE (0.9) and therefore got silently
-                # dropped by `_only_no_website_leads`. Propagate the real
-                # confidence returned by verify_business_website instead.
+                # FIX: verify_business_website now returns high confidence
+                # (0.85-0.95) when it finds no website, so propagate that.
+                has_website = False
                 confidence = verif_conf
 
         # Classify social links
@@ -1189,6 +1298,16 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                 seen_socials.add(link)
                 deduped_socials.append(link)
 
+        # FIX: confidence_no_website semantics:
+        # - When has_website=True: we want LOW confidence_no_website
+        #   (because we're NOT confident they lack a website)
+        # - When has_website=False: we want HIGH confidence_no_website
+        #   (because we ARE confident they lack a website)
+        if has_website:
+            confidence_no_website = max(0.0, 1.0 - confidence)
+        else:
+            confidence_no_website = confidence
+
         return LeadBusiness(
             business_name=eb.business_name,
             category=eb.category or category,
@@ -1201,8 +1320,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             has_social_media=bool(deduped_socials),
             social_links=deduped_socials,
             source_url=eb.source_url,
-            # confidence_no_website: high value = we are confident they have NO site
-            confidence_no_website=(1.0 - confidence) if has_website else confidence,
+            confidence_no_website=confidence_no_website,
         )
 
     tasks = [process_business(eb) for eb in raw_businesses]

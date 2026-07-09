@@ -20,6 +20,12 @@ _DIRECTORY_OR_SOCIAL_DOMAINS: frozenset[str] = frozenset({
     "angi.com", "homeadvisor.com", "thumbtack.com", "houzz.com", "nextdoor.com",
     "opentable.com", "alignable.com", "superpages.com", "local.com", "manta.com",
     "citysearch.com", "merchantcircle.com", "google.com", "maps.google.com",
+    # Europe / Australia / global directories
+    "gelbeseiten.de", "pagesjaunes.fr", "paginegialle.it", "europages.com",
+    "hotfrog.com", "cylex.com", "brownbook.net", "tuugo.com",
+    "kompass.com", "truelocal.com.au", "yellowpages.com.au",
+    "glassdoor.com", "indeed.com", "wikipedia.org", "reddit.com",
+    "quora.com", "threebestrated.com", "bark.com", "expertise.com",
 })
 
 
@@ -63,9 +69,18 @@ def init_db():
                 social_links TEXT,
                 source_url TEXT,
                 location TEXT,
+                confidence_no_website REAL DEFAULT 0.0,
                 scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migrate: add confidence_no_website column if it doesn't exist
+        try:
+            cursor.execute(f"SELECT confidence_no_website FROM {TABLE_NAME} LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN confidence_no_website REAL DEFAULT 0.0")
+            logger.info("Migrated: added confidence_no_website column to leads table.")
+
         cursor.execute("""
             SELECT name FROM sqlite_master WHERE type='table' AND name='stored_leads'
         """)
@@ -110,11 +125,15 @@ def save_leads(leads, location: str) -> int:
             # Serialize social links list to JSON string
             social_links_str = json.dumps(lead.social_links or [])
             
+            # Get confidence score — default to 0.8 if not present
+            confidence = getattr(lead, 'confidence_no_website', 0.8)
+
             cursor.execute(f"""
                 INSERT OR IGNORE INTO {TABLE_NAME} (
                     id, business_name, category, address, phone, email, 
-                    has_website, website_url, google_maps_url, social_links, source_url, location, scanned_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    has_website, website_url, google_maps_url, social_links, source_url,
+                    location, confidence_no_website, scanned_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 lead_id,
                 lead.business_name.strip(),
@@ -128,6 +147,7 @@ def save_leads(leads, location: str) -> int:
                 social_links_str,
                 (lead.source_url or "").strip(),
                 location.strip(),
+                confidence,
                 datetime.now(UTC).isoformat()
             ))
             saved_count += cursor.rowcount
@@ -170,7 +190,13 @@ def get_stored_leads(category: str | None = None, location: str | None = None) -
                 social_links = json.loads(row["social_links"]) if row["social_links"] else []
             except Exception:
                 pass
-                
+
+            # Safely get confidence_no_website (may not exist in old DBs)
+            try:
+                confidence = float(row["confidence_no_website"]) if row["confidence_no_website"] else 0.0
+            except Exception:
+                confidence = 0.0
+
             results.append({
                 "id": row["id"],
                 "business_name": row["business_name"],
@@ -183,6 +209,7 @@ def get_stored_leads(category: str | None = None, location: str | None = None) -
                 "google_maps_url": row["google_maps_url"],
                 "social_links": social_links,
                 "source_url": row["source_url"],
+                "confidence_no_website": confidence,
                 "location": row["location"],
                 "scanned_at": row["scanned_at"]
             })
@@ -193,15 +220,25 @@ def get_stored_leads(category: str | None = None, location: str | None = None) -
     return results
 
 def get_discovered_names(category: str, location: str) -> list[str]:
-    """Retrieves list of business names already discovered for this category and location."""
+    """Retrieves list of business names already discovered for this category and location.
+    
+    FIX: Uses LIKE matching instead of exact equality for location, so
+    "New York" matches "New York, USA" and vice versa.  Also uses LIKE
+    for category so "Salon" matches "Beauty Salon" etc.
+    """
     init_db()
     conn = get_connection()
     names = []
     try:
         cursor = conn.cursor()
+        # FIX: Use LIKE instead of = for both category and location
+        # so that slight variations ("New York" vs "New York, USA") still
+        # match and prevent re-discovering the same businesses.
+        cat_term = category.lower().strip()
+        loc_term = location.lower().strip().split(",")[0].strip()  # Use primary part
         cursor.execute(
-            f"SELECT business_name FROM {TABLE_NAME} WHERE LOWER(category) = ? AND LOWER(location) = ?",
-            (category.lower().strip(), location.lower().strip())
+            f"SELECT business_name FROM {TABLE_NAME} WHERE LOWER(category) LIKE ? AND LOWER(location) LIKE ?",
+            (f"%{cat_term}%", f"%{loc_term}%")
         )
         rows = cursor.fetchall()
         names = [row["business_name"] for row in rows]

@@ -28,7 +28,7 @@ class LeadDatabaseTest(unittest.TestCase):
             email="hello@atlas.example",
             has_website=False,
             social_links=["https://facebook.com/atlasgym"],
-            source_url="https://example.com/listing",
+            source_url="https://facebook.com/atlasgym",
         )
 
         self.assertEqual(db.save_leads([lead], "New York"), 1)
