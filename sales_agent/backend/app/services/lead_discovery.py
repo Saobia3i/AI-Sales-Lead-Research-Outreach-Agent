@@ -134,6 +134,31 @@ def _normalize_url_for_parsing(url: str) -> str:
     return url
 
 
+_MEDIA_AND_INFO_DOMAINS: frozenset[str] = frozenset({
+    "wikipedia.org", "imdb.com", "rottentomatoes.com", "tvguide.com", 
+    "netflix.com", "hulu.com", "youtube.com", "vimeo.com", "goodreads.com", 
+    "spotify.com", "britannica.com", "fandom.com", "tumblr.com", 
+    "reddit.com", "quora.com", "nytimes.com", "bbc.co.uk", "bbc.com", 
+    "cnn.com", "forbes.com", "theguardian.com", "guardian.co.uk", 
+    "amazon.com", "ebay.com", "walmart.com", "target.com"
+})
+
+
+def _is_media_or_info_domain(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        normalized = _normalize_url_for_parsing(url)
+        parsed = urlparse(normalized)
+        domain = parsed.netloc.removeprefix("www.")
+        for blocked in _MEDIA_AND_INFO_DOMAINS:
+            if domain == blocked or domain.endswith("." + blocked):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _is_directory_or_social(url: str) -> bool:
     """Returns True if the URL belongs to a known directory, social media, or listing site."""
     if not url:
@@ -808,9 +833,9 @@ def _has_contact_medium(lead: LeadBusiness) -> bool:
 
 
 def _should_keep_processed_lead(lead: LeadBusiness) -> bool:
-    """Keep verified no-website leads even when no contact detail is visible."""
-    if not lead.has_website:
-        return True
+    """Only keep valid local businesses that have at least one practical contact channel
+    so we can actually perform sales outreach.
+    """
     return _has_contact_medium(lead)
 
 
@@ -927,20 +952,117 @@ def _is_generic_query_name(name: str, category: str, location: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Non-business entity detection
+# ---------------------------------------------------------------------------
+
+# Parenthetical media markers that appear in search result titles
+_MEDIA_PARENTHETICALS = re.compile(
+    r"\("
+    r"(?:TV\s*series|television|TV\s*show|TV\s*programme|TV\s*program"
+    r"|film|movie|motion\s*picture|short\s*film|documentary"
+    r"|novel|book|manga|comic|graphic\s*novel"
+    r"|song|album|single|EP|soundtrack|music"
+    r"|band|musician|singer|rapper|artist"
+    r"|video\s*game|game|mobile\s*game"
+    r"|play|musical|opera|ballet"
+    r"|poem|painting|sculpture"
+    r"|magazine|newspaper|journal|publication"
+    r"|podcast|web\s*series|web\s*show"
+    r"|concept|philosophy|ideology"
+    r"|mythology|legend|fairy\s*tale"
+    r"|\d{4}\s*film|\d{4}\s*TV\s*series"
+    r"|season\s*\d+|series\s*\d+"
+    r")\)",
+    re.IGNORECASE,
+)
+
+# Snippet-level signals that the search result is about media/entertainment
+_MEDIA_SNIPPET_SIGNALS = re.compile(
+    r"\b(?:"
+    r"starring|directed\s+by|produced\s+by|written\s+by"
+    r"|season\s+\d+|episode\s+\d+|episodes?\s+of"
+    r"|premiered\s+on|aired\s+on|broadcast\s+on|streaming\s+on"
+    r"|box\s+office|rotten\s+tomatoes|imdb\s+rating"
+    r"|published\s+by|author\s+of|novelist|playwright"
+    r"|discography|tracklist|lyrics|chorus"
+    r"|\d+\s*seasons?\s+and\s+\d+\s*episodes?"
+    r"|fictional|character\s+in|plot\s+summary|synopsis"
+    r"|Wikipedia|encyclopedia|wiki"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_non_business_entity(
+    name: str,
+    snippet: str = "",
+    source_url: str = "",
+) -> bool:
+    """Return True if the extracted 'business' is actually a TV show, movie,
+    book, song, Wikipedia article, or other non-business media entity.
+
+    This is a critical quality gate — these slip through LLM extraction
+    because their names look like real businesses (e.g. 'The Beauty',
+    'The Gym', 'The Office').
+    """
+    # 1. Parenthetical markers in the name itself
+    if _MEDIA_PARENTHETICALS.search(name):
+        return True
+
+    # 2. Source URL is a media/info domain
+    if source_url and _is_media_or_info_domain(source_url):
+        return True
+
+    # 3. Snippet contains strong media signals
+    combined_text = f"{name} {snippet}"
+    matches = _MEDIA_SNIPPET_SIGNALS.findall(combined_text)
+    if len(matches) >= 2:
+        # Multiple media signals = very likely not a business
+        return True
+
+    # 4. Name ends with year-in-parentheses pattern common for media
+    #    e.g. "The Beauty (2023)" or "Gym Confidential (2019)"
+    if re.search(r"\(\d{4}\)\s*$", name):
+        return True
+
+    # 5. Name contains explicit media type words
+    name_lower = name.lower()
+    media_name_fragments = (
+        "tv series", "tv show", "the movie", "the film",
+        "the novel", "the book", "the album", "the song",
+        "web series", "the musical", "the play",
+        "documentary", "podcast",
+    )
+    if any(fragment in name_lower for fragment in media_name_fragments):
+        return True
+
+    return False
+
+
 def _is_low_quality_business_result(
     chunk: EvidenceChunk,
     name: str,
     category: str,
     location: str,
 ) -> bool:
-    """Filter listicles, social posts, search pages, and generic discussion pages."""
-    parsed = urlparse(chunk.url.lower())
+    """Filter listicles, social posts, search pages, media entities, and generic discussion pages."""
+    normalized_url = _normalize_url_for_parsing(chunk.url)
+    parsed = urlparse(normalized_url)
     domain = parsed.netloc.removeprefix("www.")
     path = parsed.path.lower()
     text = f"{chunk.title or ''} {chunk.snippet or ''}".lower()
     lowered_name = name.lower()
 
     if _is_generic_query_name(name, category, location):
+        return True
+
+    # Non-business entity check (TV shows, movies, books, etc.)
+    if _is_non_business_entity(name, chunk.snippet or "", chunk.url):
+        return True
+
+    # Media/info domain check
+    if _is_media_or_info_domain(chunk.url):
         return True
 
     bad_name_fragments = (
@@ -1105,7 +1227,8 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         for chunk in batch:
             if chunk.url not in seen_urls:
                 seen_urls.add(chunk.url)
-                chunks.append(chunk)
+                if not _is_media_or_info_domain(chunk.url):
+                    chunks.append(chunk)
 
     if not chunks:
         errors.append("No search results returned. Try a different category or location.")
@@ -1130,7 +1253,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
 
     extraction_system = (
         "You are an expert business data extraction assistant.\n"
-        "Extract individual business listings from the search results provided.\n"
+        "Extract individual, active commercial business listings from the search results provided.\n"
         "For each business extract:\n"
         "- business_name: the official business name\n"
         "- category: type of business (e.g. Salon, Bakery, School)\n"
@@ -1143,14 +1266,12 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         "  Do NOT put Facebook/Instagram/Yelp/TripAdvisor/directories here — put those in social_links.\n"
         "- social_links: any Facebook page, Instagram profile, Yelp listing, etc.\n"
         "- source_url: the URL of the snippet where you found this business\n\n"
-        "Only extract real businesses that match the requested category and location. "
-        "Never use the search phrase, category, or location as the business_name. "
-        "For example, 'Car Mechanic in Mumbai', 'Best Car Mechanics in Mumbai', "
-        "or 'Car Mechanic Mumbai' are NOT business names; skip them unless an exact "
-        "individual business name is visible. "
-        "If an exact business name is visible, extract it even if phone/email/address "
-        "are missing; leave missing contact fields null. "
-        "If a field is not found, leave it null. Do NOT invent or guess data."
+        "CRITICAL RULES:\n"
+        "1. Only extract real, active, operating commercial businesses. Do NOT extract blogs, forums, informational articles, or news reports.\n"
+        "2. Never use the search phrase, category, or location as the business_name (e.g. 'Car Mechanic in Mumbai' is NOT a business name; skip it).\n"
+        "3. Do NOT extract TV shows, movies, series, books, songs, albums, Wikipedia entries, historical figures, news topics, or other non-business media entities.\n"
+        "4. If a listing is permanently closed or defunct, skip it.\n"
+        "5. Leave missing contact fields null. Do NOT invent or guess data."
     )
 
     exclude_text = ""
@@ -1219,6 +1340,11 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         for business in deduped_businesses
         if _normalize_name(business.business_name) not in excluded_normalized
         and not _is_generic_query_name(business.business_name, category, location)
+        and not _is_non_business_entity(
+            business.business_name,
+            "",  # no snippet available at this stage
+            business.source_url or "",
+        )
     ]
 
     if not raw_businesses:
