@@ -50,6 +50,7 @@ import {
   Sms as SmsIcon,
   Call as CallIcon,
   Message as MessageIcon,
+  FileDownload as DownloadIcon,
 } from "@mui/icons-material";
 
 type LeadBusiness = {
@@ -183,10 +184,11 @@ const theme = createTheme({
 });
 
 const SUGGESTIONS = ["Beauty Salons", "Tutoring Centers", "Gyms", "Cafes", "Dentists", "Mechanics"];
+const LOCATION_SUGGESTIONS = ["New York", "London", "Los Angeles", "Birmingham", "Chicago", "Manchester"];
 
 export default function Home() {
   const [category, setCategory] = useState("Beauty Salons");
-  const [location, setLocation] = useState("Dhaka");
+  const [location, setLocation] = useState("New York");
   const [senderName, setSenderName] = useState("");
   const [senderCompany, setSenderCompany] = useState("");
   const [serviceDesc, setServiceDesc] = useState(
@@ -214,6 +216,114 @@ export default function Home() {
   const [editedSocialDM, setEditedSocialDM] = useState("");
   const [editedSMS, setEditedSMS] = useState("");
   const [editedScript, setEditedScript] = useState("");
+
+  // SMTP Gmail settings states
+  const [smtpEmail, setSmtpEmail] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [smtpServer, setSmtpServer] = useState("smtp.gmail.com");
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [emailSendStatus, setEmailSendStatus] = useState<{ success: boolean; message: string } | null>(null);
+
+  // CSV Export Logic
+  const exportToCSV = () => {
+    if (displayedLeads.length === 0) return;
+    
+    // Define headers
+    const headers = [
+      "Business Name",
+      "Category",
+      "Address",
+      "Phone",
+      "Email",
+      "Has Website",
+      "Website URL",
+      "Google Maps URL",
+      "Social Links",
+      "Source URL",
+    ];
+    
+    // Map leads to rows
+    const rows = displayedLeads.map((lead) => [
+      lead.business_name,
+      lead.category || "",
+      lead.address || "",
+      lead.phone || "",
+      lead.email || "",
+      lead.has_website ? "Yes" : "No",
+      lead.website_url || "",
+      lead.google_maps_url || "",
+      (lead.social_links || []).join("; "),
+      lead.source_url || "",
+    ]);
+    
+    // Create CSV content
+    const csvContent = [
+      headers.join(","),
+      ...rows.map((row) =>
+        row
+          .map((val) => {
+            // Escape double quotes and wrap in quotes to handle commas/newlines
+            const cleanVal = String(val).replace(/"/g, '""');
+            return `"${cleanVal}"`;
+          })
+          .join(",")
+      ),
+    ].join("\n");
+    
+    // Download file
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `leads-${category.toLowerCase()}-${location.toLowerCase()}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // SMTP Email Send Logic
+  const sendEmailViaSMTP = async () => {
+    if (!selectedLead || !selectedLead.email) {
+      alert("No email address found for this lead.");
+      return;
+    }
+    if (!smtpEmail || !smtpPassword) {
+      alert("Please configure your sender Gmail account and Gmail App Password first.");
+      return;
+    }
+    
+    setIsSendingEmail(true);
+    setEmailSendStatus(null);
+    
+    try {
+      const response = await fetch(`${apiBase}/api/v1/send_email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipient_email: selectedLead.email,
+          subject: editedEmailSubject,
+          body: editedEmailBody,
+          sender_email: smtpEmail,
+          smtp_app_password: smtpPassword,
+          smtp_server: smtpServer,
+          smtp_port: smtpPort,
+        }),
+      });
+      
+      const data = await response.json();
+      if (response.ok) {
+        setEmailSendStatus({ success: true, message: "Email sent successfully!" });
+      } else {
+        throw new Error(data.detail || "Failed to send email");
+      }
+    } catch (err) {
+      setEmailSendStatus({ success: false, message: err instanceof Error ? err.message : "Failed to send email" });
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
 
   async function runSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -432,11 +542,24 @@ export default function Home() {
                           label="Location (City / Area)"
                           value={location}
                           onChange={(e) => setLocation(e.target.value)}
-                          placeholder="e.g. Dhaka, London, Paris"
+                          placeholder="e.g. New York, London, Los Angeles"
                           required
                           variant="outlined"
                           size="small"
                         />
+                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 1 }}>
+                          {LOCATION_SUGGESTIONS.map((loc) => (
+                            <Chip
+                              key={loc}
+                              label={loc}
+                              size="small"
+                              onClick={() => setLocation(loc)}
+                              variant={location.toLowerCase() === loc.toLowerCase() ? "filled" : "outlined"}
+                              color={location.toLowerCase() === loc.toLowerCase() ? "primary" : "default"}
+                              sx={{ cursor: "pointer", fontSize: "0.75rem" }}
+                            />
+                          ))}
+                        </Box>
                       </Grid>
 
                       {/* Outreach Settings Collapsible */}
@@ -490,6 +613,77 @@ export default function Home() {
                                   value={serviceDesc}
                                   onChange={(e) => setServiceDesc(e.target.value)}
                                   placeholder="What value do you offer local businesses?"
+                                  variant="outlined"
+                                  size="small"
+                                />
+                              </Grid>
+                            </Grid>
+                          </AccordionDetails>
+                        </Accordion>
+                      </Grid>
+                      {/* SMTP Email Settings Collapsible */}
+                      <Grid size={12} sx={{ mt: 1 }}>
+                        <Accordion
+                          disableGutters
+                          sx={{
+                            bgcolor: "rgba(15, 23, 42, 0.4)",
+                            border: "1px solid rgba(255, 255, 255, 0.05)",
+                            borderRadius: "10px !important",
+                            boxShadow: "none",
+                            "&:before": { display: "none" },
+                          }}
+                        >
+                          <AccordionSummary expandIcon={<ExpandMoreIcon color="secondary" />}>
+                            <Box sx={{ display: "flex", alignItems: "center" }}>
+                              <EmailIcon fontSize="small" color="secondary" sx={{ mr: 1 }} />
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                Email SMTP Settings (Gmail)
+                              </Typography>
+                            </Box>
+                          </AccordionSummary>
+                          <AccordionDetails sx={{ p: 2, pt: 0 }}>
+                            <Grid container spacing={2}>
+                              <Grid size={12}>
+                                <TextField
+                                  fullWidth
+                                  label="Sender Gmail Account"
+                                  value={smtpEmail}
+                                  onChange={(e) => setSmtpEmail(e.target.value)}
+                                  placeholder="yourname@gmail.com"
+                                  variant="outlined"
+                                  size="small"
+                                />
+                              </Grid>
+                              <Grid size={12}>
+                                <TextField
+                                  fullWidth
+                                  type="password"
+                                  label="Gmail App Password"
+                                  value={smtpPassword}
+                                  onChange={(e) => setSmtpPassword(e.target.value)}
+                                  placeholder="16-character app password"
+                                  variant="outlined"
+                                  size="small"
+                                  helperText="Use a Google App Password (not your main password)"
+                                />
+                              </Grid>
+                              <Grid size={8}>
+                                <TextField
+                                  fullWidth
+                                  label="SMTP Server"
+                                  value={smtpServer}
+                                  onChange={(e) => setSmtpServer(e.target.value)}
+                                  variant="outlined"
+                                  size="small"
+                                />
+                              </Grid>
+                              <Grid size={4}>
+                                <TextField
+                                  fullWidth
+                                  type="number"
+                                  label="Port"
+                                  value={smtpPort}
+                                  onChange={(e) => setSmtpPort(Number(e.target.value))}
                                   variant="outlined"
                                   size="small"
                                 />
@@ -565,15 +759,39 @@ export default function Home() {
                     </Box>
 
                     {leads.length > 0 && (
-                      <Chip
-                        icon={<FilterIcon sx={{ fontSize: "14px !important" }} />}
-                        label="No Website Only"
-                        onClick={() => setFilterNoWebsite(!filterNoWebsite)}
-                        color={filterNoWebsite ? "primary" : "default"}
-                        variant={filterNoWebsite ? "filled" : "outlined"}
-                        size="small"
-                        sx={{ cursor: "pointer" }}
-                      />
+                      <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+                        <Button
+                          variant="outlined"
+                          color="secondary"
+                          size="small"
+                          onClick={exportToCSV}
+                          startIcon={<DownloadIcon sx={{ fontSize: "14px !important" }} />}
+                          sx={{
+                            height: 24,
+                            fontSize: "0.75rem",
+                            borderRadius: "16px",
+                            px: 1.5,
+                            borderWidth: 1,
+                            borderColor: "secondary.main",
+                            color: "secondary.main",
+                            "&:hover": {
+                              borderWidth: 1,
+                              bgcolor: "rgba(16, 185, 129, 0.08)",
+                            }
+                          }}
+                        >
+                          Export CSV
+                        </Button>
+                        <Chip
+                          icon={<FilterIcon sx={{ fontSize: "14px !important" }} />}
+                          label="No Website Only"
+                          onClick={() => setFilterNoWebsite(!filterNoWebsite)}
+                          color={filterNoWebsite ? "primary" : "default"}
+                          variant={filterNoWebsite ? "filled" : "outlined"}
+                          size="small"
+                          sx={{ cursor: "pointer" }}
+                        />
+                      </Box>
                     )}
                   </Box>
                   <Divider sx={{ mb: 2, borderColor: "rgba(255,255,255,0.06)" }} />
@@ -961,6 +1179,44 @@ export default function Home() {
                           ? "Copy Subject & Body"
                           : "Copy Pitch"}
                       </Button>
+
+                      {activeTab === "email" && selectedLead && selectedLead.email && (
+                        <>
+                          <Button
+                            fullWidth
+                            variant="contained"
+                            color="success"
+                            disabled={isSendingEmail}
+                            onClick={sendEmailViaSMTP}
+                            startIcon={isSendingEmail ? <CircularProgress size={20} color="inherit" /> : <EmailIcon />}
+                            sx={{
+                              mt: 1,
+                              height: 40,
+                              fontWeight: 700,
+                              bgcolor: "#10b981",
+                              "&:hover": {
+                                bgcolor: "#059669",
+                                boxShadow: "0 0 15px rgba(16, 185, 129, 0.4)",
+                              }
+                            }}
+                          >
+                            {isSendingEmail ? "Sending Email..." : `Send Email to ${selectedLead.email}`}
+                          </Button>
+                          {emailSendStatus && (
+                            <Alert
+                              severity={emailSendStatus.success ? "success" : "error"}
+                              sx={{
+                                mt: 1,
+                                borderRadius: 2,
+                                bgcolor: emailSendStatus.success ? "rgba(16, 185, 129, 0.1)" : "rgba(244, 63, 94, 0.1)",
+                                border: emailSendStatus.success ? "1px solid rgba(16, 185, 129, 0.2)" : "1px solid rgba(244, 63, 94, 0.2)",
+                              }}
+                            >
+                              {emailSendStatus.message}
+                            </Alert>
+                          )}
+                        </>
+                      )}
                     </Box>
                   )}
                 </CardContent>

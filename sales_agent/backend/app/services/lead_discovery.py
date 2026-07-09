@@ -68,10 +68,14 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     # Global social / video
     "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
     "youtube.com", "tiktok.com", "pinterest.com", "threads.net", "snapchat.com",
-    # Review & directory sites
+    # Review & directory sites (Global / US / UK)
     "yelp.com", "tripadvisor.com", "yellowpages.com", "foursquare.com",
     "groupon.com", "mapquest.com", "justdial.com", "zomato.com", "swiggy.com",
-    "foodpanda.com", "happycow.net",
+    "foodpanda.com", "happycow.net", "yell.com", "bbb.org", "trustpilot.com",
+    "angi.com", "homeadvisor.com", "thumbtack.com", "houzz.com", "nextdoor.com",
+    "opentable.com", "alignable.com", "superpages.com", "local.com", "manta.com",
+    "citysearch.com", "merchantcircle.com", "checkatrade.com", "ratedpeople.com",
+    "thomsonlocal.com", "scoot.co.uk",
     # BD-specific listing sites
     "bikroy.com", "shajgoj.com", "chaldal.com", "daraz.com.bd", "bdsaloons.com",
     "bd-beauty.com", "bangladesh.local.com", "businesslistbd.com",
@@ -93,6 +97,33 @@ def _is_directory_or_social(url: str) -> bool:
         # Strip subdomains: e.g. "dhaka.yelp.com" -> matches "yelp.com"
         for blocked in _DIRECTORY_DOMAINS:
             if domain == blocked or domain.endswith("." + blocked):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_matching_domain(business_name: str, url: str) -> bool:
+    """Returns True if the URL's domain contains part of the business name, to avoid matching unrelated blog/news/listings."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url.lower())
+        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        # Normalize business name to alphanumeric words
+        words = [w for w in re.split(r'\W+', business_name.lower()) if len(w) > 2]
+        # Common non-unique words to ignore
+        ignore_words = {"salon", "beauty", "parlour", "lounge", "spa", "shop", "center", "centre", "academy", "studio", "group", "official", "website", "bd"}
+        unique_words = [w for w in words if w not in ignore_words]
+        
+        # If no unique words left, use all words
+        search_words = unique_words if unique_words else words
+        if not search_words:
+            return False
+            
+        # Check if any unique word is part of the domain name
+        for word in search_words:
+            if word in domain:
                 return True
     except Exception:
         pass
@@ -192,16 +223,16 @@ async def check_url_active(url: str) -> tuple[bool, str | None]:
                             or metadata.get("sourceURL")
                             or normalized
                         )
-                    logger.debug(f"Firecrawl confirmed live: {normalized} -> {resolved}")
+                    logger.info(f"✅ Firecrawl confirmed live: {normalized} -> {resolved}")
                     return True, resolved
 
             # Firecrawl returned but with no content — treat as dead/parked
-            logger.debug(f"Firecrawl returned empty content for {normalized}")
+            logger.info(f"⚠️ Firecrawl returned empty content for {normalized}")
             return False, None
 
         except Exception as fc_err:
             logger.warning(
-                f"Firecrawl scrape failed for {normalized!r}: {fc_err}. "
+                f"❌ Firecrawl scrape failed for {normalized!r}: {fc_err}. "
                 "Falling back to httpx check."
             )
             # fall through to httpx fallback
@@ -230,7 +261,7 @@ async def verify_business_website(
     Returns:
         (has_website, website_url, confidence)
     """
-    query = f'"{business_name}" {location} official website'
+    query = f"{business_name} {location} website"
     search_results_text = ""
     candidate_urls: list[str] = []
 
@@ -240,6 +271,7 @@ async def verify_business_website(
     fc = _get_firecrawl_client()
     if fc is not None:
         try:
+            logger.info(f"🔍 Searching Google via Firecrawl Search for '{business_name}'...")
             fc_results = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: fc.search(query, limit=5),
@@ -247,20 +279,26 @@ async def verify_business_website(
             if fc_results and hasattr(fc_results, "data") and fc_results.data:
                 parts = []
                 for item in fc_results.data:
-                    url = getattr(item, "url", "") or ""
-                    title = getattr(item, "title", "") or ""
-                    desc = getattr(item, "description", "") or getattr(item, "markdown", "") or ""
+                    if isinstance(item, dict):
+                        url = item.get("url") or ""
+                        title = item.get("title") or ""
+                        desc = item.get("description") or item.get("markdown") or ""
+                    else:
+                        url = getattr(item, "url", "") or ""
+                        title = getattr(item, "title", "") or ""
+                        desc = getattr(item, "description", "") or getattr(item, "markdown", "") or ""
                     parts.append(f"Title: {title}\nURL: {url}\nSnippet: {desc[:300]}\n")
                     if url and not _is_directory_or_social(url):
                         candidate_urls.append(url)
                 search_results_text = "\n".join(parts)
         except Exception as fc_err:
-            logger.debug(f"Firecrawl search failed for '{business_name}': {fc_err}")
+            logger.warning(f"Firecrawl search failed for '{business_name}': {fc_err}")
 
     # ------------------------------------------------------------------
     # Strategy 2: DDGS fallback if Firecrawl didn't return results
     # ------------------------------------------------------------------
     if not search_results_text:
+        logger.info(f"⚠️ Falling back to DDGS Search for '{business_name}'...")
         try:
             chunks = await search_provider.search(query, task="overview", max_results=6)
         except Exception:
@@ -276,6 +314,17 @@ async def verify_business_website(
         for c in chunks:
             if c.url and not _is_directory_or_social(c.url):
                 candidate_urls.append(c.url)
+
+    # ------------------------------------------------------------------
+    # Programmatic verification: Check if any candidate URL matches the business name
+    # ------------------------------------------------------------------
+    if candidate_urls:
+        for cand_url in candidate_urls[:3]:
+            if _is_matching_domain(business_name, cand_url):
+                is_active, resolved = await check_url_active(cand_url)
+                if is_active:
+                    logger.info(f"Programmatic verification confirmed official website for '{business_name}': {resolved}")
+                    return True, resolved, 0.95
 
     # ------------------------------------------------------------------
     # LLM analysis
@@ -486,14 +535,10 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     raw_businesses = _deduplicate(extracted_data.businesses)
 
     # ------------------------------------------------------------------
-    # 3. Website checking: parallel, with a cap on expensive verify calls
+    # 3. Website checking — Google-search EVERY business via Firecrawl
     # ------------------------------------------------------------------
 
-    # Determine which businesses need deep verification
-    MAX_VERIFY_CALLS = 15
-    verify_budget = MAX_VERIFY_CALLS
-
-    async def process_business(eb: ExtractedBusiness, allow_verify: bool) -> LeadBusiness:
+    async def process_business(eb: ExtractedBusiness) -> LeadBusiness:
         website_url = eb.website_url
         has_website = False
         social_links = list(eb.social_links)
@@ -506,28 +551,37 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             website_url = None
 
         if website_url:
-            # LLM found a potential standalone website — verify it's alive
+            # LLM found a potential standalone website
+            has_website = True
             is_active, resolved_url = await check_url_active(website_url)
             if is_active:
-                has_website = True
                 website_url = resolved_url
                 confidence = 0.95
             else:
-                # URL exists but is dead / parked
-                has_website = False
-                confidence = 0.90
-        elif allow_verify:
-            # No website in snippets — do a targeted search to double-check
+                # Keep has_website = True but double check if Google has an active one
+                has_web, web_url, verif_conf = await verify_business_website(
+                    eb.business_name, location
+                )
+                if has_web and web_url:
+                    website_url = web_url
+                    confidence = verif_conf
+                else:
+                    confidence = 0.85
+        else:
+            # No website found from snippet extraction — Google-search to
+            # check if the business actually has one.
             has_web, web_url, verif_conf = await verify_business_website(
                 eb.business_name, location
             )
-            confidence = verif_conf
             if has_web and web_url:
+                has_website = True
+                website_url = web_url
+                confidence = verif_conf
+                # Try to resolve final URL, but keep the web_url if ping fails
                 is_active, resolved_url = await check_url_active(web_url)
-                has_website = is_active
-                website_url = resolved_url if is_active else web_url
-            # else: stays has_website=False
-        # else: no verify budget left — trust the initial extraction (no website found)
+                if is_active:
+                    website_url = resolved_url
+                    confidence = max(confidence, 0.9)
 
         # Classify social links
         clean_socials = [
@@ -558,22 +612,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             confidence_no_website=(1.0 - confidence) if has_website else confidence,
         )
 
-    # Decide which businesses get a deep verify search
-    # Prioritise: has phone or address (i.e. they're real, contactable businesses)
-    prioritised = sorted(
-        raw_businesses,
-        key=lambda b: (bool(b.phone) or bool(b.address)),
-        reverse=True,
-    )
-
-    tasks = []
-    remaining_verify = verify_budget
-    for eb in prioritised:
-        needs_verify = not eb.website_url or _is_directory_or_social(eb.website_url or "")
-        use_verify = needs_verify and remaining_verify > 0
-        if use_verify:
-            remaining_verify -= 1
-        tasks.append(process_business(eb, allow_verify=use_verify))
+    tasks = [process_business(eb) for eb in raw_businesses]
 
     leads = list(await asyncio.gather(*tasks))
 

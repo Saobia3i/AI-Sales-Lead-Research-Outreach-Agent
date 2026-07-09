@@ -222,3 +222,14 @@ class LeadEmailRequest(BaseModel):
     sender_name: str
     sender_company: str
     service_description: str
+
+
+class SendEmailRequest(BaseModel):
+    recipient_email: str
+    subject: str
+    body: str
+    sender_email: str
+    smtp_app_password: str
+    smtp_server: str = "smtp.gmail.com"
+    smtp_port: int = 587
+

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,8 +21,10 @@ from app.schemas import (
     LeadEmailRequest,
     LeadDraftEmail,
     LeadOutreachDrafts,
+    SendEmailRequest,
 )
 from app.services.lead_discovery import find_leads_pipeline, generate_custom_lead_email
+from app.services.email import send_smtp_email
 
 
 app = FastAPI(title="AI Sales Lead Research & Outreach Agent", version="0.1.0")
@@ -32,6 +35,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    import logging
+    logger = logging.getLogger("uvicorn")
+    try:
+        from app.services.lead_discovery import _firecrawl_available
+        if not _firecrawl_available:
+            logger.warning("⚠️ Firecrawl package is NOT installed or could not be imported! Falling back to raw HTTP validation.")
+        elif not settings.firecrawl_api_key:
+            logger.warning("⚠️ FIRECRAWL_API_KEY is not configured in settings/env! Falling back to raw HTTP validation.")
+        else:
+            logger.info("✅ Firecrawl initialized successfully and ready for Google Search verification.")
+    except Exception as e:
+        logger.error(f"Startup check failed: {e}")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -58,6 +77,15 @@ async def generate_lead_email(request: LeadEmailRequest) -> LeadOutreachDrafts:
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Email generation failed: {str(e)}")
+
+
+@app.post("/api/v1/send_email")
+async def send_email(request: SendEmailRequest):
+    try:
+        await send_smtp_email(request)
+        return {"status": "success", "message": "Email sent successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
 
 @app.post("/api/v1/research_company", response_model=ResearchCompanyResponse)
