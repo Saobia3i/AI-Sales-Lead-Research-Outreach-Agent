@@ -196,6 +196,9 @@ class LLMProvider:
         if isinstance(node, dict):
             if node.get("type") == "object":
                 node.setdefault("additionalProperties", False)
+                properties = node.get("properties")
+                if isinstance(properties, dict):
+                    node["required"] = list(properties.keys())
             for value in node.values():
                 cls._mark_objects_strict(value)
         elif isinstance(node, list):
