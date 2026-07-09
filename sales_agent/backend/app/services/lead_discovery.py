@@ -514,6 +514,8 @@ async def verify_business_website(
         except Exception as fc_err:
             logger.warning(f"Firecrawl search failed for '{business_name}': {fc_err}")
 
+    search_failed = False
+
     # ------------------------------------------------------------------
     # Strategy 2: DDGS fallback if Firecrawl didn't return results
     # ------------------------------------------------------------------
@@ -521,10 +523,11 @@ async def verify_business_website(
         logger.info(f"⚠️ Falling back to DDGS Search for '{business_name}'...")
         try:
             chunks = await search_provider.search(query, task="overview", max_results=6)
+            if chunks is None:
+                search_failed = True
+                chunks = []
         except Exception:
-            chunks = []
-
-        if not chunks:
+            search_failed = True
             chunks = []
 
         search_results_text = "\n".join(
@@ -541,9 +544,15 @@ async def verify_business_website(
     extra_queries = [q for q in verification_queries if q != query]
 
     async def _extra_ddgs_search(extra_query: str) -> list[EvidenceChunk]:
+        nonlocal search_failed
         try:
-            return await search_provider.search(extra_query, task="overview", max_results=4)
+            res = await search_provider.search(extra_query, task="overview", max_results=4)
+            if res is None:
+                search_failed = True
+                return []
+            return res
         except Exception:
+            search_failed = True
             return []
 
     extra_batches = await asyncio.gather(*[_extra_ddgs_search(q) for q in extra_queries])
@@ -563,9 +572,11 @@ async def verify_business_website(
         search_results_text = "\n".join([search_results_text, *extra_parts]).strip()
 
     if not search_results_text:
-        # FIX: No search results at all = strong evidence the business has
-        # no web presence whatsoever.  Previously returned 0.35 which was
-        # below MIN_NO_WEBSITE_CONFIDENCE and caused leads to be dropped.
+        # If the search failed due to rate limits or API errors, do NOT assume no website.
+        # Set low confidence (0.4) so this business doesn't get shown as a verified lead.
+        if search_failed:
+            logger.warning(f"⚠️ Search failed during website verification for '{business_name}'. Assigning low confidence.")
+            return False, None, 0.4
         return False, None, 0.95
 
     # ------------------------------------------------------------------

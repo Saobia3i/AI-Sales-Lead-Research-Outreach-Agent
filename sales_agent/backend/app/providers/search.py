@@ -39,7 +39,7 @@ class DDGSSearchProvider:
             )
         except Exception as exc:
             logger.warning(f"DDGS search failed for {query!r} (region={effective_region}): {exc}")
-            return []
+            return None
 
     def _search_sync(
         self,
@@ -48,29 +48,22 @@ class DDGSSearchProvider:
         max_results: int,
         region: str,
     ) -> list[EvidenceChunk]:
-        try:
-            from ddgs import DDGS
-        except Exception as exc:
-            logger.warning(f"DDGS package import failed: {exc}")
-            return []
+        from ddgs import DDGS
 
         chunks: list[EvidenceChunk] = []
-        try:
-            with DDGS() as ddgs:
-                for result in ddgs.text(query, max_results=max_results, region=region):
-                    url = result.get("href") or result.get("url")
-                    snippet = result.get("body") or result.get("snippet")
-                    if not url or not snippet:
-                        continue
-                    chunks.append(
-                        EvidenceChunk(
-                            task=task,
-                            url=url,
-                            title=result.get("title"),
-                            snippet=snippet,
-                            source_name="ddgs",
-                        )
+        with DDGS() as ddgs:
+            for result in ddgs.text(query, max_results=max_results, region=region):
+                url = result.get("href") or result.get("url")
+                snippet = result.get("body") or result.get("snippet")
+                if not url or not snippet:
+                    continue
+                chunks.append(
+                    EvidenceChunk(
+                        task=task,
+                        url=url,
+                        title=result.get("title"),
+                        snippet=snippet,
+                        source_name="ddgs",
                     )
-        except Exception as exc:
-            logger.warning(f"DDGS text search error for {query!r}: {exc}")
+                )
         return chunks
