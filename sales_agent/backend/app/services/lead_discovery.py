@@ -11,6 +11,7 @@ from app.config import settings
 from app.providers.llm import llm_provider
 from app.providers.search import DDGSSearchProvider
 from app.schemas import LeadBusiness, LeadDraftEmail, LeadSearchRequest, LeadSearchResponse, LeadOutreachDrafts
+from app.services.db import get_discovered_names, save_leads
 
 logger = logging.getLogger(__name__)
 search_provider = DDGSSearchProvider()
@@ -442,14 +443,41 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     location = request.location
     errors: list[str] = []
 
+    # 1. Fetch names of already discovered businesses for this category and location to exclude
+    try:
+        exclude_names = get_discovered_names(category, location)
+    except Exception as e:
+        logger.error(f"Failed to fetch exclusion names from DB: {e}")
+        exclude_names = []
+
+    # Calculate pagination offsets
+    page = getattr(request, "page", 1)
+    if page == 1:
+        fetch_limit = 8
+        slice_start = 0
+        slice_end = 8
+    elif page == 2:
+        fetch_limit = 20
+        slice_start = 8
+        slice_end = 20
+    elif page == 3:
+        fetch_limit = 35
+        slice_start = 20
+        slice_end = 35
+    else:
+        fetch_limit = 50
+        slice_start = 35
+        slice_end = 50
+
     # ------------------------------------------------------------------
-    # 1. Run multiple search queries in parallel for better coverage
+    # 2. Run multiple search queries in parallel for better coverage
     # ------------------------------------------------------------------
     queries = _build_search_queries(category, location)
 
     async def _safe_search(q: str) -> list:
         try:
-            return await search_provider.search(q, task="overview", max_results=8)
+            results = await search_provider.search(q, task="overview", max_results=fetch_limit)
+            return results[slice_start:slice_end]
         except Exception as e:
             logger.warning(f"Search query failed ({q!r}): {e}")
             return []
@@ -478,7 +506,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         )
 
     # ------------------------------------------------------------------
-    # 2. Extract business listings via LLM
+    # 3. Extract business listings via LLM
     # ------------------------------------------------------------------
     search_results_text = "\n".join(
         f"URL: {c.url}\nTitle: {c.title}\nSnippet: {c.snippet}\n"
@@ -504,10 +532,19 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         "If a field is not found, leave it null. Do NOT invent or guess data."
     )
 
+    exclude_text = ""
+    if exclude_names:
+        exclude_text = (
+            "CRITICAL: Do NOT extract or return ANY of the following businesses. "
+            "They have already been processed in previous scans. Skip them completely:\n"
+            + "\n".join(f"- {name}" for name in exclude_names[:100])
+        )
+
     extraction_user = (
         f"Category: {category}\n"
         f"Location: {location}\n\n"
-        f"Search Results:\n{search_results_text}"
+        + (f"{exclude_text}\n\n" if exclude_text else "")
+        + f"Search Results:\n{search_results_text}"
     )
 
     extracted_data = None
@@ -531,8 +568,26 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             errors=errors + ["Could not extract any businesses from the search results."],
         )
 
-    # Deduplicate before processing
-    raw_businesses = _deduplicate(extracted_data.businesses)
+    # Deduplicate before processing and enforce DB exclusions locally as a
+    # backstop in case the model still returns an already-seen business.
+    excluded_normalized = {_normalize_name(name) for name in exclude_names}
+    raw_businesses = [
+        business
+        for business in _deduplicate(extracted_data.businesses)
+        if _normalize_name(business.business_name) not in excluded_normalized
+    ]
+
+    if not raw_businesses:
+        return LeadSearchResponse(
+            leads=[], total_found=0, total_without_website=0,
+            draft_email=LeadDraftEmail(
+                to_business="Prospect",
+                subject="Website proposal",
+                body="Hi there,\n\nI noticed you have a great business but don't have a website yet...",
+            ),
+            search_query_used=queries[0],
+            errors=errors + ["All extracted businesses were already stored for this category and location."],
+        )
 
     # ------------------------------------------------------------------
     # 3. Website checking — Google-search EVERY business via Firecrawl
@@ -631,6 +686,14 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         sender_company=request.sender_company,
         service_desc=request.service_description,
     )
+
+    # 5. Save all processed leads to SQLite database
+    if leads:
+        try:
+            save_leads(leads, location)
+        except Exception as e:
+            logger.error(f"Error saving leads to SQLite: {e}")
+            errors.append(f"SQLite Save Error: {e}")
 
     return LeadSearchResponse(
         leads=leads,

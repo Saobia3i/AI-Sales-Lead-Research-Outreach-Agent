@@ -22,9 +22,12 @@ from app.schemas import (
     LeadDraftEmail,
     LeadOutreachDrafts,
     SendEmailRequest,
+    StoredLead,
+    DeleteStoredLeadResponse,
 )
 from app.services.lead_discovery import find_leads_pipeline, generate_custom_lead_email
 from app.services.email import send_smtp_email
+from app.services.db import get_stored_leads, delete_stored_lead
 
 
 app = FastAPI(title="AI Sales Lead Research & Outreach Agent", version="0.1.0")
@@ -86,6 +89,27 @@ async def send_email(request: SendEmailRequest):
         return {"status": "success", "message": "Email sent successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
+
+@app.get("/api/v1/stored_leads", response_model=list[StoredLead])
+async def get_leads(category: str | None = None, location: str | None = None) -> list[StoredLead]:
+    try:
+        return get_stored_leads(category=category, location=location)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve stored leads: {str(e)}")
+
+
+@app.delete("/api/v1/stored_leads/{lead_id}", response_model=DeleteStoredLeadResponse)
+async def delete_lead(lead_id: str) -> DeleteStoredLeadResponse:
+    try:
+        success = delete_stored_lead(lead_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        return DeleteStoredLeadResponse(status="success", message="Lead deleted successfully")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete lead: {str(e)}")
 
 
 @app.post("/api/v1/research_company", response_model=ResearchCompanyResponse)

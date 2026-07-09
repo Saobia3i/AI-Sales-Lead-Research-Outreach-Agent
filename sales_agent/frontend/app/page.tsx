@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import {
   ThemeProvider,
   createTheme,
@@ -31,6 +31,14 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  Tabs,
+  Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
 } from "@mui/material";
 import Grid from "@mui/material/Grid";
 import {
@@ -55,9 +63,12 @@ import {
   Call as CallIcon,
   Message as MessageIcon,
   FileDownload as DownloadIcon,
+  Delete as DeleteIcon,
+  Storage as StorageIcon,
 } from "@mui/icons-material";
 
 type LeadBusiness = {
+  id?: string;
   business_name: string;
   category: string | null;
   address: string | null;
@@ -70,6 +81,8 @@ type LeadBusiness = {
   social_links: string[];
   source_url: string | null;
   confidence_no_website: number;
+  location?: string | null;
+  scanned_at?: string | null;
 };
 
 type LeadDraftEmail = {
@@ -216,6 +229,13 @@ export default function Home() {
   const [isCustomOutreachLoading, setIsCustomOutreachLoading] = useState(false);
   const [filterNoWebsite, setFilterNoWebsite] = useState(true);
   const [searchQueryUsed, setSearchQueryUsed] = useState("");
+  const [searchPage, setSearchPage] = useState(1);
+  const [mainTab, setMainTab] = useState<"scanner" | "database">("scanner");
+  const [storedLeads, setStoredLeads] = useState<LeadBusiness[]>([]);
+  const [storedCategoryFilter, setStoredCategoryFilter] = useState("");
+  const [storedLocationFilter, setStoredLocationFilter] = useState("");
+  const [isStoredLoading, setIsStoredLoading] = useState(false);
+  const [storedError, setStoredError] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -239,14 +259,13 @@ export default function Home() {
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [emailSendStatus, setEmailSendStatus] = useState<{ success: boolean; message: string } | null>(null);
 
-  // CSV Export Logic
-  const exportToCSV = () => {
-    if (displayedLeads.length === 0) return;
-    
-    // Define headers
+  const exportLeadsToCSV = (items: LeadBusiness[], filename: string) => {
+    if (items.length === 0) return;
+
     const headers = [
       "Business Name",
       "Category",
+      "Location",
       "Address",
       "Phone",
       "Email",
@@ -255,12 +274,13 @@ export default function Home() {
       "Google Maps URL",
       "Social Links",
       "Source URL",
+      "Scanned At",
     ];
-    
-    // Map leads to rows
-    const rows = displayedLeads.map((lead) => [
+
+    const rows = items.map((lead) => [
       lead.business_name,
       lead.category || "",
+      lead.location || "",
       lead.address || "",
       lead.phone || "",
       lead.email || "",
@@ -269,33 +289,79 @@ export default function Home() {
       lead.google_maps_url || "",
       (lead.social_links || []).join("; "),
       lead.source_url || "",
+      lead.scanned_at || "",
     ]);
-    
-    // Create CSV content
+
     const csvContent = [
       headers.join(","),
       ...rows.map((row) =>
         row
           .map((val) => {
-            // Escape double quotes and wrap in quotes to handle commas/newlines
             const cleanVal = String(val).replace(/"/g, '""');
             return `"${cleanVal}"`;
           })
           .join(",")
       ),
     ].join("\n");
-    
-    // Download file
+
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `leads-${category.toLowerCase()}-${location.toLowerCase()}.csv`);
+    link.setAttribute("download", filename);
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
+
+  // CSV Export Logic
+  const exportToCSV = () => {
+    exportLeadsToCSV(displayedLeads, `leads-${category.toLowerCase()}-${location.toLowerCase()}-page-${searchPage}.csv`);
+  };
+
+  const fetchStoredLeads = async () => {
+    setIsStoredLoading(true);
+    setStoredError(null);
+    try {
+      const params = new URLSearchParams();
+      if (storedCategoryFilter.trim()) params.set("category", storedCategoryFilter.trim());
+      if (storedLocationFilter.trim()) params.set("location", storedLocationFilter.trim());
+      const query = params.toString();
+      const response = await fetch(`${apiBase}/api/v1/stored_leads${query ? `?${query}` : ""}`);
+      if (!response.ok) {
+        throw new Error(`Stored leads request failed with status ${response.status}`);
+      }
+      const data = (await response.json()) as LeadBusiness[];
+      setStoredLeads(data);
+    } catch (err) {
+      setStoredError(err instanceof Error ? err.message : "Failed to load stored leads");
+    } finally {
+      setIsStoredLoading(false);
+    }
+  };
+
+  const deleteStoredLead = async (leadId: string) => {
+    setStoredError(null);
+    try {
+      const response = await fetch(`${apiBase}/api/v1/stored_leads/${leadId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        throw new Error(`Delete failed with status ${response.status}`);
+      }
+      setStoredLeads((current) => current.filter((lead) => lead.id !== leadId));
+    } catch (err) {
+      setStoredError(err instanceof Error ? err.message : "Failed to delete stored lead");
+    }
+  };
+
+  useEffect(() => {
+    if (mainTab === "database") {
+      fetchStoredLeads();
+    }
+  }, [mainTab]);
 
   // SMTP Email Send Logic
   const sendEmailViaSMTP = async () => {
@@ -357,6 +423,7 @@ export default function Home() {
           sender_name: senderName,
           sender_company: senderCompany,
           service_description: serviceDesc,
+          page: searchPage,
         }),
       });
       if (!response.ok) {
@@ -366,6 +433,7 @@ export default function Home() {
       setLeads(data.leads);
       setGlobalEmail(data.draft_email);
       setSearchQueryUsed(data.search_query_used);
+      fetchStoredLeads();
       if (data.errors && data.errors.length > 0) {
         setError(data.errors.join(", "));
       }
@@ -514,6 +582,19 @@ export default function Home() {
             </Typography>
           </Box>
 
+          <Box sx={{ mb: 3, borderBottom: 1, borderColor: "rgba(255,255,255,0.08)" }}>
+            <Tabs
+              value={mainTab}
+              onChange={(_, value: "scanner" | "database") => setMainTab(value)}
+              textColor="primary"
+              indicatorColor="primary"
+            >
+              <Tab icon={<SearchIcon />} iconPosition="start" label="Scanner" value="scanner" />
+              <Tab icon={<StorageIcon />} iconPosition="start" label="Lead Database" value="database" />
+            </Tabs>
+          </Box>
+
+          {mainTab === "scanner" && (
           <Grid container spacing={3}>
             {/* Left: Input Form Panel */}
             <Grid size={{ xs: 12, md: 4 }}>
@@ -598,6 +679,32 @@ export default function Home() {
                             <MenuItem value=""><em>None (Custom location)</em></MenuItem>
                             {US_STATES.map((state) => (
                               <MenuItem key={state} value={state}>{state}</MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </Grid>
+
+                      <Grid size={12}>
+                        <FormControl fullWidth size="small">
+                          <InputLabel id="search-page-label" sx={{ color: "rgba(255,255,255,0.7)" }}>
+                            Search Offset / Page
+                          </InputLabel>
+                          <Select
+                            labelId="search-page-label"
+                            value={searchPage}
+                            label="Search Offset / Page"
+                            onChange={(e) => setSearchPage(Number(e.target.value))}
+                            sx={{
+                              bgcolor: "rgba(15, 23, 42, 0.4)",
+                              "& .MuiOutlinedInput-notchedOutline": {
+                                borderColor: "rgba(255, 255, 255, 0.1)",
+                              },
+                            }}
+                          >
+                            {[1, 2, 3, 4].map((page) => (
+                              <MenuItem key={page} value={page}>
+                                Page {page}
+                              </MenuItem>
                             ))}
                           </Select>
                         </FormControl>
@@ -1264,6 +1371,158 @@ export default function Home() {
               </Card>
             </Grid>
           </Grid>
+          )}
+
+          {mainTab === "database" && (
+            <Card>
+              <CardContent sx={{ p: 3 }}>
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: { xs: "stretch", md: "center" },
+                    justifyContent: "space-between",
+                    gap: 2,
+                    flexDirection: { xs: "column", md: "row" },
+                    mb: 2,
+                  }}
+                >
+                  <Box sx={{ display: "flex", alignItems: "center" }}>
+                    <StorageIcon color="primary" sx={{ mr: 1 }} />
+                    <Box>
+                      <Typography variant="h6">Lead Database</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {storedLeads.length} saved lead{storedLeads.length === 1 ? "" : "s"}
+                      </Typography>
+                    </Box>
+                  </Box>
+
+                  <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                    <TextField
+                      label="Category filter"
+                      value={storedCategoryFilter}
+                      onChange={(e) => setStoredCategoryFilter(e.target.value)}
+                      size="small"
+                      sx={{ minWidth: 170 }}
+                    />
+                    <TextField
+                      label="Location filter"
+                      value={storedLocationFilter}
+                      onChange={(e) => setStoredLocationFilter(e.target.value)}
+                      size="small"
+                      sx={{ minWidth: 170 }}
+                    />
+                    <Button
+                      variant="outlined"
+                      onClick={fetchStoredLeads}
+                      disabled={isStoredLoading}
+                      startIcon={isStoredLoading ? <CircularProgress size={16} /> : <SearchIcon />}
+                    >
+                      Filter
+                    </Button>
+                    <Button
+                      variant="contained"
+                      color="secondary"
+                      onClick={() => exportLeadsToCSV(storedLeads, "stored-leads.csv")}
+                      disabled={storedLeads.length === 0}
+                      startIcon={<DownloadIcon />}
+                    >
+                      Export All to CSV
+                    </Button>
+                  </Box>
+                </Box>
+
+                {storedError && (
+                  <Alert severity="error" sx={{ mb: 2 }}>
+                    {storedError}
+                  </Alert>
+                )}
+
+                <TableContainer component={Paper} variant="outlined" sx={{ borderColor: "rgba(255,255,255,0.08)" }}>
+                  <Table size="small" stickyHeader>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Business</TableCell>
+                        <TableCell>Category</TableCell>
+                        <TableCell>Location</TableCell>
+                        <TableCell>Contact</TableCell>
+                        <TableCell>Website</TableCell>
+                        <TableCell>Scanned</TableCell>
+                        <TableCell align="right">Actions</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {isStoredLoading ? (
+                        <TableRow>
+                          <TableCell colSpan={7} align="center" sx={{ py: 6 }}>
+                            <CircularProgress size={28} />
+                          </TableCell>
+                        </TableRow>
+                      ) : storedLeads.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={7} align="center" sx={{ py: 6 }}>
+                            <Typography variant="body2" color="text.secondary">
+                              No stored leads found.
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        storedLeads.map((lead) => (
+                          <TableRow key={lead.id || lead.business_name} hover>
+                            <TableCell sx={{ minWidth: 220 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                {lead.business_name}
+                              </Typography>
+                              {lead.address && (
+                                <Typography variant="caption" color="text.secondary">
+                                  {lead.address}
+                                </Typography>
+                              )}
+                            </TableCell>
+                            <TableCell>{lead.category || "-"}</TableCell>
+                            <TableCell>{lead.location || "-"}</TableCell>
+                            <TableCell sx={{ minWidth: 180 }}>
+                              <Typography variant="caption" sx={{ display: "block" }}>
+                                {lead.phone || "No phone"}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                                {lead.email || "No email"}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              {lead.has_website ? (
+                                <Chip label="Has Website" color="success" size="small" />
+                              ) : (
+                                <Chip label="No Website" color="error" size="small" />
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption" color="text.secondary">
+                                {lead.scanned_at ? new Date(lead.scanned_at).toLocaleString() : "-"}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Tooltip title="Delete lead">
+                                <span>
+                                  <IconButton
+                                    color="error"
+                                    size="small"
+                                    disabled={!lead.id}
+                                    onClick={() => lead.id && deleteStoredLead(lead.id)}
+                                  >
+                                    <DeleteIcon fontSize="small" />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </CardContent>
+            </Card>
+          )}
         </Container>
       </Box>
     </ThemeProvider>

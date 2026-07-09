@@ -206,6 +206,7 @@ class LeadSearchRequest(BaseModel):
     sender_company: str = "Your Company"
     service_description: str = "We build professional, affordable websites for small businesses"
     max_results: int = Field(default=15, ge=1, le=50)
+    page: int = Field(default=1, ge=1)
 
 
 class LeadSearchResponse(BaseModel):
@@ -215,6 +216,18 @@ class LeadSearchResponse(BaseModel):
     draft_email: LeadDraftEmail  # generic template or example
     search_query_used: str
     errors: list[str] = Field(default_factory=list)
+
+
+class StoredLead(LeadBusiness):
+    id: str
+    confidence_no_website: float = Field(ge=0.0, le=1.0, default=0.0)
+    location: str | None = None
+    scanned_at: str | None = None
+
+
+class DeleteStoredLeadResponse(BaseModel):
+    status: Literal["success"]
+    message: str
 
 
 class LeadEmailRequest(BaseModel):
@@ -232,4 +245,3 @@ class SendEmailRequest(BaseModel):
     smtp_app_password: str | None = None
     smtp_server: str | None = None
     smtp_port: int | None = None
-
