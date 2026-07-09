@@ -29,12 +29,22 @@ _DIRECTORY_OR_SOCIAL_DOMAINS: frozenset[str] = frozenset({
 })
 
 
+def _normalize_url_for_parsing(url: str) -> str:
+    if not url:
+        return ""
+    url = url.strip().lower()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 def _looks_like_standalone_source_url(url: str | None) -> bool:
     if not url:
         return False
     try:
-        parsed = urlparse(url.lower())
-        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        normalized = _normalize_url_for_parsing(url)
+        parsed = urlparse(normalized)
+        domain = parsed.netloc.removeprefix("www.")
         if not domain or "." not in domain:
             return False
         return not any(

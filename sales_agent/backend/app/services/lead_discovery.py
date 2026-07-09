@@ -125,13 +125,23 @@ _WEBSITE_BUILDER_DOMAINS: frozenset[str] = frozenset({
 })
 
 
+def _normalize_url_for_parsing(url: str) -> str:
+    if not url:
+        return ""
+    url = url.strip().lower()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 def _is_directory_or_social(url: str) -> bool:
     """Returns True if the URL belongs to a known directory, social media, or listing site."""
     if not url:
         return False
     try:
-        parsed = urlparse(url.lower())
-        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        normalized = _normalize_url_for_parsing(url)
+        parsed = urlparse(normalized)
+        domain = parsed.netloc.removeprefix("www.")
         if _is_website_builder_url(url):
             return False
         # Strip subdomains: e.g. "dhaka.yelp.com" -> matches "yelp.com"
@@ -153,8 +163,9 @@ def _is_website_builder_url(url: str) -> bool:
     if not url:
         return False
     try:
-        parsed = urlparse(url.lower())
-        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        normalized = _normalize_url_for_parsing(url)
+        parsed = urlparse(normalized)
+        domain = parsed.netloc.removeprefix("www.")
         for builder_domain in _WEBSITE_BUILDER_DOMAINS:
             if domain == builder_domain or domain.endswith("." + builder_domain):
                 return True
@@ -168,8 +179,9 @@ def _is_matching_domain(business_name: str, url: str) -> bool:
     if not url:
         return False
     try:
-        parsed = urlparse(url.lower())
-        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        normalized = _normalize_url_for_parsing(url)
+        parsed = urlparse(normalized)
+        domain = parsed.netloc.removeprefix("www.")
         domain_label = domain.split(".")[0]
         compact_domain = _compact_alnum(domain_label)
         compact_name = _compact_alnum(business_name)
