@@ -146,8 +146,19 @@ def _is_matching_domain(business_name: str, url: str) -> bool:
         domain = (parsed.netloc or parsed.path).removeprefix("www.")
         # Normalize business name to alphanumeric words
         words = [w for w in re.split(r'\W+', business_name.lower()) if len(w) > 2]
-        # Common non-unique words to ignore
-        ignore_words = {"salon", "beauty", "parlour", "lounge", "spa", "shop", "center", "centre", "academy", "studio", "group", "official", "website", "bd"}
+        # Common non-unique words to ignore (including general industry nouns and category indicators)
+        ignore_words = {
+            "salon", "beauty", "parlour", "lounge", "spa", "shop", "center", "centre", "academy", 
+            "studio", "group", "official", "website", "bd", "bakery", "bakeries", "bake", "bakes", 
+            "gym", "gyms", "fitness", "dentist", "dental", "clinic", "restaurant", "restaurants", 
+            "cafe", "cafes", "hotel", "hotels", "bar", "bars", "club", "clubs", "school", "schools", 
+            "college", "colleges", "university", "universities", "cleaning", "cleaner", "cleaners", 
+            "plumber", "plumbing", "electrician", "electrical", "construction", "builder", "builders", 
+            "roofing", "roofer", "lawyer", "attorney", "law", "legal", "doctor", "medical", "physio", 
+            "chiro", "pet", "dog", "cat", "vet", "veterinary", "automotive", "car", "cars", "auto", 
+            "repair", "service", "services", "store", "stores", "shop", "shops", "market", "grocery",
+            "food", "kitchen"
+        }
         unique_words = [w for w in words if w not in ignore_words]
         
         # If no unique words left, use all words
