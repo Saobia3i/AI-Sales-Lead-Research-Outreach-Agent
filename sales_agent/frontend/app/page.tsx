@@ -239,6 +239,7 @@ export default function Home() {
 
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [copied, setCopied] = useState(false);
 
   // Outreach Composer Tabs
@@ -412,6 +413,7 @@ export default function Home() {
     setSelectedLead(null);
     setCustomOutreach(null);
     setLeads([]);
+    setHasSearched(false);
 
     try {
       const response = await fetch(`${apiBase}/api/v1/find_leads`, {
@@ -430,6 +432,7 @@ export default function Home() {
         throw new Error(`Lead search failed with status ${response.status}`);
       }
       const data = (await response.json()) as LeadSearchResponse;
+      setHasSearched(true);
       setLeads(data.leads);
       setGlobalEmail(data.draft_email);
       setSearchQueryUsed(data.search_query_used);
@@ -448,6 +451,7 @@ export default function Home() {
         }
       }
     } catch (err) {
+      setHasSearched(true);
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setIsLoading(false);
@@ -854,6 +858,14 @@ export default function Home() {
                           {isLoading ? "Scraping & Researching..." : "Scan & Discover Leads"}
                         </Button>
                       </Grid>
+
+                      {error && (
+                        <Grid size={12}>
+                          <Alert severity="warning" sx={{ borderRadius: 2 }}>
+                            {error}
+                          </Alert>
+                        </Grid>
+                      )}
                     </Grid>
                   </form>
                 </CardContent>
@@ -977,7 +989,9 @@ export default function Home() {
                     >
                       <HelpIcon sx={{ fontSize: 48, color: "rgba(255,255,255,0.1)", mb: 1.5 }} />
                       <Typography variant="body2" color="text.secondary">
-                        Enter details on the left and scan to start researching.
+                        {hasSearched
+                          ? "No leads found for this scan. Try Page 1, a broader location, or check the warning in Search Parameters."
+                          : "Enter details on the left and scan to start researching."}
                       </Typography>
                     </Box>
                   ) : displayedLeads.length === 0 ? (

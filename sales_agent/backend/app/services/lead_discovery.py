@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.providers.llm import llm_provider
 from app.providers.search import DDGSSearchProvider
-from app.schemas import LeadBusiness, LeadDraftEmail, LeadSearchRequest, LeadSearchResponse, LeadOutreachDrafts
+from app.schemas import EvidenceChunk, LeadBusiness, LeadDraftEmail, LeadSearchRequest, LeadSearchResponse, LeadOutreachDrafts
 from app.services.db import get_discovered_names, save_leads
 
 logger = logging.getLogger(__name__)
@@ -399,6 +399,51 @@ def _build_search_queries(category: str, location: str) -> list[str]:
     ]
 
 
+async def _firecrawl_search_chunks(query: str, max_results: int) -> list[EvidenceChunk]:
+    """Search via Firecrawl when configured, returning EvidenceChunk objects."""
+    fc = _get_firecrawl_client()
+    if fc is None:
+        return []
+
+    try:
+        fc_results = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: fc.search(query, limit=max_results),
+        )
+    except Exception as exc:
+        logger.warning(f"Firecrawl discovery search failed ({query!r}): {exc}")
+        return []
+
+    data = getattr(fc_results, "data", None) if fc_results else None
+    if not data:
+        return []
+
+    chunks: list[EvidenceChunk] = []
+    for item in data:
+        if isinstance(item, dict):
+            url = item.get("url") or ""
+            title = item.get("title") or ""
+            snippet = item.get("description") or item.get("markdown") or ""
+        else:
+            url = getattr(item, "url", "") or ""
+            title = getattr(item, "title", "") or ""
+            snippet = getattr(item, "description", "") or getattr(item, "markdown", "") or ""
+
+        if not url or not snippet:
+            continue
+
+        chunks.append(
+            EvidenceChunk(
+                task="overview",
+                url=url,
+                title=title,
+                snippet=snippet[:1000],
+                source_name="firecrawl",
+            )
+        )
+    return chunks
+
+
 # ---------------------------------------------------------------------------
 # Deduplication helpers
 # ---------------------------------------------------------------------------
@@ -476,7 +521,9 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
 
     async def _safe_search(q: str) -> list:
         try:
-            results = await search_provider.search(q, task="overview", max_results=fetch_limit)
+            results = await _firecrawl_search_chunks(q, max_results=fetch_limit)
+            if not results:
+                results = await search_provider.search(q, task="overview", max_results=fetch_limit)
             return results[slice_start:slice_end]
         except Exception as e:
             logger.warning(f"Search query failed ({q!r}): {e}")
@@ -673,6 +720,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
 
     # Sort: no-website first, then by confidence descending
     leads.sort(key=lambda x: (x.has_website, -x.confidence_no_website))
+    leads = leads[:request.max_results]
 
     total_without_website = sum(1 for lead in leads if not lead.has_website)
 
