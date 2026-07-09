@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     max_lead_search_results: int = Field(default=20, alias="MAX_LEAD_SEARCH_RESULTS")
     website_check_timeout_seconds: int = Field(default=5, alias="WEBSITE_CHECK_TIMEOUT")
     firecrawl_api_key: str | None = Field(default=None, alias="FIRECRAWL_API_KEY")
+    smtp_host: str = Field(default="smtp.gmail.com", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str | None = Field(default=None, alias="SMTP_USER")
+    smtp_pass: str | None = Field(default=None, alias="SMTP_PASS")
+    smtp_from: str | None = Field(default=None, alias="SMTP_FROM")
 
     @property
     def cors_origin_list(self) -> list[str]:

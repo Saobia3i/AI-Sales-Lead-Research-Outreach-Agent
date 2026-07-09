@@ -4,13 +4,21 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 
+from app.config import settings
 from app.schemas import SendEmailRequest
 
 logger = logging.getLogger(__name__)
 
 def _send_smtp_email_sync(req: SendEmailRequest) -> None:
     """Synchronous core for sending an email via SMTP."""
-    sender = req.sender_email.strip()
+    sender = (req.sender_email or settings.smtp_user or "").strip()
+    password = (req.smtp_app_password or settings.smtp_pass or "").strip()
+    smtp_server = (req.smtp_server or settings.smtp_host or "smtp.gmail.com").strip()
+    smtp_port = req.smtp_port or settings.smtp_port or 587
+    
+    if not sender or not password:
+        raise ValueError("Sender email and SMTP App Password are not configured (either pass them in request or set in .env)")
+
     recipient = req.recipient_email.strip()
     
     # Create message container
@@ -26,13 +34,13 @@ def _send_smtp_email_sync(req: SendEmailRequest) -> None:
     server = None
     try:
         # Connect to server
-        server = smtplib.SMTP(req.smtp_server, req.smtp_port, timeout=15)
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
         server.ehlo()
         server.starttls()  # Upgrade connection to TLS
         server.ehlo()
         
         # Login
-        server.login(sender, req.smtp_app_password.strip())
+        server.login(sender, password)
         
         # Send mail
         server.sendmail(sender, [recipient], msg.as_string())

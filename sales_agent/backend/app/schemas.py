@@ -228,8 +228,8 @@ class SendEmailRequest(BaseModel):
     recipient_email: str
     subject: str
     body: str
-    sender_email: str
-    smtp_app_password: str
-    smtp_server: str = "smtp.gmail.com"
-    smtp_port: int = 587
+    sender_email: str | None = None
+    smtp_app_password: str | None = None
+    smtp_server: str | None = None
+    smtp_port: int | None = None
 
