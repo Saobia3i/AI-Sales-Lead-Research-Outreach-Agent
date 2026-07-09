@@ -393,6 +393,7 @@ def _build_search_queries(category: str, location: str) -> list[str]:
     return [
         f"{category} in {location} phone address contact",
         f"{c} {location} contact number",
+        f'"{category}" "{location}" facebook page',
         f"{category} {location} facebook page",
         f"{category} near {location} list",
         f"{location} {category} business directory phone",
@@ -523,18 +524,22 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
 
     async def _safe_search(q: str) -> list:
         try:
-            # DDGS was the original discovery source and tends to return
-            # directory/listing snippets that the extraction prompt can parse.
-            results = await search_provider.search(q, task="overview", max_results=fetch_limit)
-            page_results = results[slice_start:slice_end]
+            # Real search aggregation: Firecrawl hits the live search API,
+            # DDGS adds directory/listing coverage that extraction can parse.
+            fc_results, ddgs_results = await asyncio.gather(
+                _firecrawl_search_chunks(q, max_results=fetch_limit),
+                search_provider.search(q, task="overview", max_results=fetch_limit),
+            )
 
-            # Firecrawl is a supplemental fallback for discovery, while still
-            # remaining the primary website verification/liveness engine below.
-            if not page_results:
-                fc_results = await _firecrawl_search_chunks(q, max_results=fetch_limit)
-                page_results = fc_results[slice_start:slice_end]
+            merged: list[EvidenceChunk] = []
+            seen: set[str] = set()
+            for result in [*fc_results, *ddgs_results]:
+                if result.url in seen:
+                    continue
+                seen.add(result.url)
+                merged.append(result)
 
-            return page_results
+            return merged[slice_start:slice_end]
         except Exception as e:
             logger.warning(f"Search query failed ({q!r}): {e}")
             return []
