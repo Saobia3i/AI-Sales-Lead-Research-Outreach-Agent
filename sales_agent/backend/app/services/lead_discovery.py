@@ -481,7 +481,9 @@ def _deduplicate(businesses: list[ExtractedBusiness]) -> list[ExtractedBusiness]
     return list(seen.values())
 
 
-_PHONE_RE = re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
+_PHONE_RE = re.compile(
+    r"(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,5}[\s.-]?\d{4,5}"
+)
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _ADDRESS_RE = re.compile(
     r"\b\d{1,6}\s+[A-Za-z0-9 .'-]{2,80}\s+"
@@ -539,13 +541,81 @@ def _name_from_search_result(title: str | None, url: str) -> str | None:
     return name or None
 
 
-def _is_low_quality_business_result(chunk: EvidenceChunk, name: str) -> bool:
+def _name_tokens(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", value.lower())
+        if len(token) > 1
+    }
+
+
+def _is_generic_query_name(name: str, category: str, location: str) -> bool:
+    """Reject search phrases/listing labels that are not exact business names."""
+    normalized = re.sub(r"\s+", " ", name.strip().lower())
+    if not normalized:
+        return True
+
+    category_norm = re.sub(r"\s+", " ", category.strip().lower())
+    location_norm = re.sub(r"\s+", " ", location.strip().lower())
+    primary_location = location_norm.split(",")[0].strip()
+
+    if normalized in {
+        category_norm,
+        primary_location,
+        f"{category_norm} in {primary_location}",
+        f"{category_norm} near {primary_location}",
+        f"{category_norm} {primary_location}",
+        f"{primary_location} {category_norm}",
+    }:
+        return True
+
+    generic_starts = (
+        "best ", "top ", "list of ", "find ", "search ", "near me",
+        "all ", "popular ", "local ", "verified ", "trusted ",
+    )
+    if normalized.startswith(generic_starts) or " near me" in normalized:
+        return True
+
+    category_tokens = _name_tokens(category_norm)
+    location_tokens = _name_tokens(primary_location)
+    generic_tokens = {
+        "in", "near", "at", "for", "and", "or", "the", "a", "an",
+        "best", "top", "local", "verified", "trusted", "service",
+        "services", "shop", "shops", "store", "stores", "company",
+        "companies", "contact", "phone", "number",
+    }
+    name_tokens = _name_tokens(normalized)
+
+    has_category = bool(name_tokens & category_tokens)
+    has_location = bool(name_tokens & location_tokens)
+    extra_tokens = name_tokens - category_tokens - location_tokens - generic_tokens
+    if has_category and has_location and not extra_tokens:
+        return True
+
+    if primary_location and re.search(rf"\b(?:in|near|at)\s+{re.escape(primary_location)}\b", normalized):
+        if has_category and len(extra_tokens) <= 1:
+            return True
+
+    return False
+
+
+def _is_low_quality_business_result(
+    chunk: EvidenceChunk,
+    name: str,
+    category: str,
+    location: str,
+) -> bool:
     """Filter listicles, social posts, search pages, and generic discussion pages."""
     parsed = urlparse(chunk.url.lower())
     domain = parsed.netloc.removeprefix("www.")
     path = parsed.path.lower()
     text = f"{chunk.title or ''} {chunk.snippet or ''}".lower()
     lowered_name = name.lower()
+
+    if _is_generic_query_name(name, category, location):
+        return True
 
     bad_name_fragments = (
         "top 10", "best gyms", "fastest way", "pay-as-you-go", "near times square",
@@ -570,6 +640,7 @@ def _is_low_quality_business_result(chunk: EvidenceChunk, name: str) -> bool:
 def _fallback_extract_from_search_chunks(
     chunks: list[EvidenceChunk],
     category: str,
+    location: str,
 ) -> list[ExtractedBusiness]:
     """Fallback when the LLM extraction returns no businesses.
 
@@ -581,7 +652,7 @@ def _fallback_extract_from_search_chunks(
         name = _name_from_search_result(chunk.title, chunk.url)
         if not name:
             continue
-        if _is_low_quality_business_result(chunk, name):
+        if _is_low_quality_business_result(chunk, name, category, location):
             continue
 
         text = f"{chunk.title or ''}\n{chunk.snippet or ''}"
@@ -740,6 +811,10 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         "- social_links: any Facebook page, Instagram profile, Yelp listing, etc.\n"
         "- source_url: the URL of the snippet where you found this business\n\n"
         "Only extract real businesses that match the requested category and location. "
+        "Never use the search phrase, category, or location as the business_name. "
+        "For example, 'Car Mechanic in Mumbai', 'Best Car Mechanics in Mumbai', "
+        "or 'Car Mechanic Mumbai' are NOT business names; skip them unless an exact "
+        "individual business name is visible. "
         "If a field is not found, leave it null. Do NOT invent or guess data."
     )
 
@@ -768,7 +843,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         errors.append(f"Business extraction failed: {str(e)}")
 
     if not extracted_data or not extracted_data.businesses:
-        fallback_businesses = _fallback_extract_from_search_chunks(chunks, category)
+        fallback_businesses = _fallback_extract_from_search_chunks(chunks, category, location)
         if fallback_businesses:
             errors.append("LLM extraction returned no businesses; used deterministic extraction from real search snippets.")
             extracted_data = ExtractedBusinessList(businesses=fallback_businesses)
@@ -799,10 +874,16 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     # Deduplicate before processing and enforce DB exclusions locally as a
     # backstop in case the model still returns an already-seen business.
     excluded_normalized = {_normalize_name(name) for name in exclude_names}
+    deduped_businesses = _deduplicate(extracted_data.businesses)
+    generic_filtered_count = sum(
+        1 for business in deduped_businesses
+        if _is_generic_query_name(business.business_name, category, location)
+    )
     raw_businesses = [
         business
-        for business in _deduplicate(extracted_data.businesses)
+        for business in deduped_businesses
         if _normalize_name(business.business_name) not in excluded_normalized
+        and not _is_generic_query_name(business.business_name, category, location)
     ]
 
     if not raw_businesses:
@@ -814,7 +895,11 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                 body="Hi there,\n\nI noticed you have a great business but don't have a website yet...",
             ),
             search_query_used=queries[0],
-            errors=errors + ["All extracted businesses were already stored for this category and location."],
+            errors=errors + [
+                "Search results did not contain exact business names."
+                if generic_filtered_count
+                else "All extracted businesses were already stored for this category and location."
+            ],
         )
 
     # ------------------------------------------------------------------
