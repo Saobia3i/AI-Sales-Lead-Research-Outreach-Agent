@@ -393,9 +393,11 @@ def _build_search_queries(category: str, location: str) -> list[str]:
     return [
         f"{category} in {location} phone address contact",
         f"{c} {location} contact number",
-        f'"{category}" "{location}" facebook page',
+        f"{category} {location} facebook page",
         f"{category} near {location} list",
         f"{location} {category} business directory phone",
+        f"{category} {location} google maps",
+        f"{category} {location} local businesses",
     ]
 
 
@@ -521,10 +523,18 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
 
     async def _safe_search(q: str) -> list:
         try:
-            results = await _firecrawl_search_chunks(q, max_results=fetch_limit)
-            if not results:
-                results = await search_provider.search(q, task="overview", max_results=fetch_limit)
-            return results[slice_start:slice_end]
+            # DDGS was the original discovery source and tends to return
+            # directory/listing snippets that the extraction prompt can parse.
+            results = await search_provider.search(q, task="overview", max_results=fetch_limit)
+            page_results = results[slice_start:slice_end]
+
+            # Firecrawl is a supplemental fallback for discovery, while still
+            # remaining the primary website verification/liveness engine below.
+            if not page_results:
+                fc_results = await _firecrawl_search_chunks(q, max_results=fetch_limit)
+                page_results = fc_results[slice_start:slice_end]
+
+            return page_results
         except Exception as e:
             logger.warning(f"Search query failed ({q!r}): {e}")
             return []

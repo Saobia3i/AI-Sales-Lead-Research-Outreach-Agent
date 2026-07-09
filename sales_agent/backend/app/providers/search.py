@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from app.schemas import EvidenceChunk, ResearchTask
+
+logger = logging.getLogger(__name__)
 
 
 class SearchProvider(Protocol):
@@ -24,13 +27,15 @@ class DDGSSearchProvider:
                 asyncio.to_thread(self._search_sync, query, task, max_results),
                 timeout=self.timeout_seconds,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"DDGS search failed for {query!r}: {exc}")
             return []
 
     def _search_sync(self, query: str, task: ResearchTask, max_results: int) -> list[EvidenceChunk]:
         try:
             from ddgs import DDGS
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"DDGS package import failed: {exc}")
             return []
 
         chunks: list[EvidenceChunk] = []
