@@ -112,6 +112,11 @@ def _is_directory_or_social(url: str) -> bool:
         for blocked in _DIRECTORY_DOMAINS:
             if domain == blocked or domain.endswith("." + blocked):
                 return True
+            # Support country TLDs (e.g. foodpanda.com.bd, yelp.co.uk)
+            if "." in blocked:
+                base = blocked.split(".")[0]
+                if len(base) > 2 and (domain.startswith(base + ".") or ("." + base + ".") in domain):
+                    return True
     except Exception:
         pass
     return False
