@@ -83,6 +83,10 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     # Aggregators / media
     "bloomberg.com", "crunchbase.com", "github.com", "medium.com",
     "lh3.googleusercontent.com", "maps.google.com", "google.com",
+    # India / South Asia directories
+    "sulekha.com", "indiamart.com", "magicpin.in", "tradeindia.com",
+    "connect2india.com", "threebestrated.in", "asklaila.com",
+    "yellowpages.in", "yelu.in", "zaubacorp.com",
     # Ecommerce platforms (not own website)
     "amazon.com", "etsy.com", "shopee.com", "alibaba.com",
 })
@@ -491,6 +495,13 @@ _ADDRESS_RE = re.compile(
     r"[^.;\n]{0,80}",
     re.IGNORECASE,
 )
+_INDIA_ADDRESS_RE = re.compile(
+    r"\b(?:Shop\s*No\.?|Office\s*No\.?|Gala\s*No\.?|Unit\s*No\.?|Plot\s*No\.?|"
+    r"Room\s*No\.?|No\.?)\s*[\w/-]+[^;\n]{0,120}?"
+    r"(?:Mumbai|Delhi|Bengaluru|Bangalore|Chennai|Kolkata|Pune|Hyderabad|Ahmedabad)"
+    r"[^;\n]{0,80}",
+    re.IGNORECASE,
+)
 
 
 def _has_contact_medium(lead: LeadBusiness) -> bool:
@@ -504,6 +515,13 @@ def _has_contact_medium(lead: LeadBusiness) -> bool:
     return False
 
 
+def _should_keep_processed_lead(lead: LeadBusiness) -> bool:
+    """Keep verified no-website leads even when no contact detail is visible."""
+    if not lead.has_website:
+        return True
+    return _has_contact_medium(lead)
+
+
 def _name_from_search_result(title: str | None, url: str) -> str | None:
     """Best-effort business name extraction from a real search result title."""
     if not title:
@@ -513,6 +531,8 @@ def _name_from_search_result(title: str | None, url: str) -> str | None:
     name = re.sub(r"\s+-\s+Updated\s+.*$", "", name, flags=re.IGNORECASE)
     name = re.sub(r"\s+\|\s+.*$", "", name)
     name = re.sub(r"\s+[\-\u2013\u2014]\s+.*$", "", name)
+    name = re.sub(r"\s*,\s+(?:Mumbai|Delhi|Bengaluru|Bangalore|Chennai|Kolkata|Pune|Hyderabad|Ahmedabad)\b.*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+(?:in|near|at)\s+(?:Mumbai|Delhi|Bengaluru|Bangalore|Chennai|Kolkata|Pune|Hyderabad|Ahmedabad)\b.*$", "", name, flags=re.IGNORECASE)
 
     generic_prefixes = ("contact us - ", "locations - ", "location - ", "contact - ")
     lowered = name.lower()
@@ -536,7 +556,6 @@ def _name_from_search_result(title: str | None, url: str) -> str | None:
 
     # Remove common SEO suffixes without destroying business names.
     name = re.sub(r"\s+-\s+(Yelp|Facebook|Instagram|LinkedIn).*$", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"\s+in\s+New York.*$", "", name, flags=re.IGNORECASE)
     name = name.strip(" -|,")
     return name or None
 
@@ -631,7 +650,18 @@ def _is_low_quality_business_result(
     if domain == "yelp.com" and path.startswith("/search"):
         return True
 
-    if any(fragment in text for fragment in ("top 10 best", "best gyms in", "reddit", "discussion")):
+    if _is_directory_or_social(chunk.url):
+        query = parsed.query.lower()
+        generic_directory_paths = (
+            "/search", "/find", "/category", "/categories", "/near-me",
+            "/businesses", "/list", "/lists",
+        )
+        if any(path.startswith(prefix) for prefix in generic_directory_paths):
+            return True
+        if any(key in query for key in ("q=", "query=", "search=", "keyword=")):
+            return True
+
+    if any(fragment in text for fragment in ("top 10 best", "reddit", "discussion")):
         return True
 
     return False
@@ -669,19 +699,24 @@ def _fallback_extract_from_search_chunks(
             email = email_match.group(0)
 
         address_match = _ADDRESS_RE.search(text)
+        if not address_match:
+            address_match = _INDIA_ADDRESS_RE.search(text)
         if address_match:
             address = address_match.group(0).strip(" ,")
 
         website_url = None
+        google_maps_url = None
         social_links: list[str] = []
-        if _is_directory_or_social(chunk.url):
+        if "google.com/maps" in chunk.url.lower() or "maps.google." in chunk.url.lower():
+            google_maps_url = chunk.url
+        elif _is_directory_or_social(chunk.url):
             social_links.append(chunk.url)
         else:
             website_url = chunk.url
 
         has_contact_signal = bool(phone or email or address)
         is_direct_site = bool(website_url)
-        is_business_directory_listing = "yelp.com/biz/" in chunk.url.lower()
+        is_business_directory_listing = bool(social_links or google_maps_url)
         if not (has_contact_signal or is_direct_site or is_business_directory_listing):
             continue
 
@@ -692,6 +727,7 @@ def _fallback_extract_from_search_chunks(
                 address=address,
                 phone=phone,
                 email=email,
+                google_maps_url=google_maps_url,
                 website_url=website_url,
                 social_links=social_links,
                 source_url=chunk.url,
@@ -815,6 +851,8 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         "For example, 'Car Mechanic in Mumbai', 'Best Car Mechanics in Mumbai', "
         "or 'Car Mechanic Mumbai' are NOT business names; skip them unless an exact "
         "individual business name is visible. "
+        "If an exact business name is visible, extract it even if phone/email/address "
+        "are missing; leave missing contact fields null. "
         "If a field is not found, leave it null. Do NOT invent or guess data."
     )
 
@@ -986,7 +1024,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
     tasks = [process_business(eb) for eb in raw_businesses]
 
     leads = list(await asyncio.gather(*tasks))
-    leads = [lead for lead in leads if _has_contact_medium(lead)]
+    leads = [lead for lead in leads if _should_keep_processed_lead(lead)]
 
     if not leads:
         return LeadSearchResponse(
@@ -997,7 +1035,7 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                 body="Hi there,\n\nI noticed you have a great business but couldn't find a contact channel yet...",
             ),
             search_query_used=queries[0],
-            errors=errors + ["Businesses were found, but none had a usable contact medium."],
+            errors=errors + ["Businesses were found, but they appeared to have websites and no usable contact medium."],
         )
 
     # Sort: no-website first, then by confidence descending
