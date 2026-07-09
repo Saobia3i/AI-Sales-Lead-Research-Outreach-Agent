@@ -23,6 +23,7 @@ The project has two main workflows:
    - Stores discovered leads in SQLite.
    - Excludes already-stored businesses from future scans for the same category and location.
    - Shows saved leads in the frontend Lead Database dashboard with filters, delete, and CSV export.
+   - Returns all valid leads found in the processed batch to the Scanner; the frontend list is scrollable.
 
 ## Technology Stack
 

@@ -24,6 +24,7 @@ The lead discovery pipeline turns the app into a persistent local lead database:
 - Store discovered leads in SQLite.
 - Exclude already-stored businesses in later scans for the same category and location.
 - View, filter, delete, and export saved leads from the frontend Lead Database tab.
+- The Scanner response returns all valid leads found in the processed batch; the frontend list is scrollable.
 
 ## Tech Stack
 
