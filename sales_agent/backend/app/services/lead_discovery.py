@@ -91,6 +91,13 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     "amazon.com", "etsy.com", "shopee.com", "alibaba.com",
 })
 
+_WEBSITE_BUILDER_DOMAINS: frozenset[str] = frozenset({
+    "wixsite.com", "wix.com", "wordpress.com", "wpcomstaging.com",
+    "squarespace.com", "weebly.com", "webflow.io", "godaddysites.com",
+    "square.site", "sites.google.com", "business.site", "blogspot.com",
+    "mystrikingly.com", "carrd.co", "site123.me", "jimdosite.com",
+})
+
 
 def _is_directory_or_social(url: str) -> bool:
     """Returns True if the URL belongs to a known directory, social media, or listing site."""
@@ -99,9 +106,26 @@ def _is_directory_or_social(url: str) -> bool:
     try:
         parsed = urlparse(url.lower())
         domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        if _is_website_builder_url(url):
+            return False
         # Strip subdomains: e.g. "dhaka.yelp.com" -> matches "yelp.com"
         for blocked in _DIRECTORY_DOMAINS:
             if domain == blocked or domain.endswith("." + blocked):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_website_builder_url(url: str) -> bool:
+    """Return True for hosted website platforms that count as real websites."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url.lower())
+        domain = (parsed.netloc or parsed.path).removeprefix("www.")
+        for builder_domain in _WEBSITE_BUILDER_DOMAINS:
+            if domain == builder_domain or domain.endswith("." + builder_domain):
                 return True
     except Exception:
         pass
@@ -133,6 +157,55 @@ def _is_matching_domain(business_name: str, url: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def _compact_alnum(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _business_name_matches_text(business_name: str, text: str) -> bool:
+    """Loose match for titles/snippets/hosted-site paths."""
+    compact_name = _compact_alnum(business_name)
+    compact_text = _compact_alnum(text)
+    if compact_name and compact_name in compact_text:
+        return True
+
+    words = [
+        word for word in re.split(r"\W+", business_name.lower())
+        if len(word) > 2 and word not in {
+            "the", "and", "auto", "car", "cars", "mechanic", "mechanics",
+            "service", "services", "garage", "motors", "shop", "store",
+            "salon", "spa", "clinic", "center", "centre",
+        }
+    ]
+    if not words:
+        words = [word for word in re.split(r"\W+", business_name.lower()) if len(word) > 2]
+    if not words:
+        return False
+    matched = sum(1 for word in words if word in text.lower())
+    return matched >= max(1, min(2, len(words)))
+
+
+def _is_plausible_official_website(
+    business_name: str,
+    url: str,
+    title: str = "",
+    snippet: str = "",
+) -> bool:
+    """Conservative official-site check used to avoid false no-website leads."""
+    if not url or _is_directory_or_social(url):
+        return False
+    if _is_matching_domain(business_name, url):
+        return True
+    if _is_website_builder_url(url):
+        parsed = urlparse(url)
+        evidence = f"{parsed.netloc} {parsed.path} {title} {snippet}"
+        return _business_name_matches_text(business_name, evidence)
+    title_snippet = f"{title} {snippet}"
+    return _business_name_matches_text(business_name, title_snippet) and any(
+        marker in title_snippet.lower()
+        for marker in ("official", "home", "contact", "about us", "services")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +342,7 @@ async def verify_business_website(
     query = f"{business_name} {location} website"
     search_results_text = ""
     candidate_urls: list[str] = []
+    candidate_evidence: dict[str, tuple[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Strategy 1: Try Firecrawl search (better quality results)
@@ -295,6 +369,7 @@ async def verify_business_website(
                     parts.append(f"Title: {title}\nURL: {url}\nSnippet: {desc[:300]}\n")
                     if url and not _is_directory_or_social(url):
                         candidate_urls.append(url)
+                        candidate_evidence[url] = (title, desc)
                 search_results_text = "\n".join(parts)
         except Exception as fc_err:
             logger.warning(f"Firecrawl search failed for '{business_name}': {fc_err}")
@@ -319,17 +394,28 @@ async def verify_business_website(
         for c in chunks:
             if c.url and not _is_directory_or_social(c.url):
                 candidate_urls.append(c.url)
+                candidate_evidence[c.url] = (c.title or "", c.snippet or "")
 
     # ------------------------------------------------------------------
     # Programmatic verification: Check if any candidate URL matches the business name
     # ------------------------------------------------------------------
     if candidate_urls:
         for cand_url in candidate_urls[:3]:
-            if _is_matching_domain(business_name, cand_url):
+            title, snippet = candidate_evidence.get(cand_url, ("", ""))
+            if _is_plausible_official_website(business_name, cand_url, title, snippet):
                 is_active, resolved = await check_url_active(cand_url)
                 if is_active:
                     logger.info(f"Programmatic verification confirmed official website for '{business_name}': {resolved}")
                     return True, resolved, 0.95
+
+    plausible_candidate_urls = [
+        cand_url for cand_url in candidate_urls[:5]
+        if _is_plausible_official_website(
+            business_name,
+            cand_url,
+            *candidate_evidence.get(cand_url, ("", "")),
+        )
+    ]
 
     # ------------------------------------------------------------------
     # LLM analysis
@@ -343,7 +429,8 @@ async def verify_business_website(
         "- Do NOT count Yelp, TripAdvisor, Foursquare, YellowPages, Zomato, Justdial or any listing directory.\n"
         "- DO count websites on platforms like Wix, WordPress, Squarespace, Weebly — these ARE real business websites.\n"
         "- Count any domain the business uses for their web presence (e.g. mysalon.com, bestcafe.com.bd, mybiz.wixsite.com).\n"
-        "- If in doubt, set has_website to false.\n"
+        "- Google Sites, business.site, Square.site, GoDaddy Sites, Blogspot, Carrd, and Webflow also count as websites.\n"
+        "- Only set has_website=false when the results show no credible official/custom/builder website for this exact business.\n"
         "Set confidence between 0.0 and 1.0 — higher when the result is clearly the business's own site."
     )
 
@@ -360,8 +447,11 @@ async def verify_business_website(
                 # Double-check the LLM didn't hallucinate a social URL
                 if _is_directory_or_social(verif.official_website_url):
                     return False, None, 0.85
-                return True, verif.official_website_url, min(verif.confidence, 1.0)
+                is_active, resolved = await check_url_active(verif.official_website_url)
+                return True, resolved or verif.official_website_url, min(verif.confidence, 1.0)
             # LLM says no website
+            if plausible_candidate_urls:
+                return True, plausible_candidate_urls[0], max(verif.confidence, 0.6)
             return False, None, verif.confidence
     except Exception as e:
         logger.warning(f"LLM website verification failed for '{business_name}': {e}")
@@ -369,19 +459,22 @@ async def verify_business_website(
     # ------------------------------------------------------------------
     # Last resort: try scraping candidate URLs directly with Firecrawl
     # ------------------------------------------------------------------
-    if candidate_urls and fc is not None:
+    if candidate_urls:
         for cand_url in candidate_urls[:2]:  # limit to 2 to save credits
             try:
+                title, snippet = candidate_evidence.get(cand_url, ("", ""))
+                if not _is_plausible_official_website(business_name, cand_url, title, snippet):
+                    continue
                 is_active, resolved = await check_url_active(cand_url)
                 if is_active:
-                    return True, resolved, 0.7
+                    return True, resolved, 0.75
             except Exception:
                 continue
 
     # -----------------------------------------------------------------------
-    # SAFE fallback: if LLM fails, we DON'T assume the business has a website.
+    # Safe fallback: no credible official/custom/builder website was found.
     # -----------------------------------------------------------------------
-    return False, None, 0.5
+    return False, None, 0.75
 
 
 # ---------------------------------------------------------------------------
