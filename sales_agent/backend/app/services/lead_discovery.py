@@ -717,58 +717,76 @@ async def verify_business_website(
 # ---------------------------------------------------------------------------
 
 def _build_search_queries(category: str, location: str, page: int = 1) -> list[str]:
-    """Returns a diverse set of search queries to maximise number of real
-    business listings found.  Different query patterns hit different DDGS
-    result pages.
-
-    For page > 1, uses entirely different query patterns instead of
-    slicing the same results (which was broken before).
+    """Returns search queries specifically tailored to find small/local businesses
+    that rely on social media pages (Facebook, Instagram) or local directories
+    rather than having their own official website.
     """
     c = category.lower().rstrip("s")  # "salons" -> "salon"
+    loc = location.strip()
+    is_bd = any(term in loc.lower() for term in ["bangladesh", "dhaka", "chittagong", "sylhet", "rajshahi", "khulna", "barisal", "rangpur", "comilla", "bd"])
 
+    # Base queries targeting Facebook/Instagram directly
     if page == 1:
-        return [
-            f"{category} in {location} phone address contact",
-            f"{c} {location} contact number",
-            f'"{category}" "{location}" facebook page',
-            f"{category} {location} facebook page",
-            f"{category} near {location} list",
-            f"{location} {category} business directory phone",
-            f"{category} {location} google maps",
-            f"{category} {location} local businesses",
+        queries = [
+            f'site:facebook.com "{category}" "{loc}" "phone" OR "contact"',
+            f'site:facebook.com/p/ "{c}" "{loc}"',
+            f'site:instagram.com "{category}" "{loc}" "phone"',
+            f'"{category}" "{loc}" site:facebook.com "contact"',
+            f'"{category}" "{loc}" "facebook.com" "phone"',
+            f'"{c}" "{loc}" site:instagram.com',
+            f'"{category}" "{loc}" "no website"',
         ]
+        if is_bd:
+            queries.extend([
+                f'site:bikroy.com "{c}" "{loc}"',
+                f'site:businesslistbd.com "{c}" "{loc}"'
+            ])
+        else:
+            queries.extend([
+                f'site:yelp.com "{category}" "{loc}" "phone"',
+                f'site:yellowpages.com "{category}" "{loc}"'
+            ])
+        return queries[:8]
     elif page == 2:
-        return [
-            f"best {category} in {location} phone number",
-            f"{location} {c} shops address website",
-            f"{c} near {location} reviews contact",
-            f"top {category} {location} 2024",
-            f'"{c}" "{location}" address phone',
-            f"{category} {location} yellow pages",
-            f"local {category} {location} directory",
-            f"{category} {location} business listing",
+        queries = [
+            f'site:facebook.com "{c}" "{loc}" "address" OR "call"',
+            f'"{category}" "{loc}" "facebook" "mobile" OR "whatsapp"',
+            f'site:instagram.com "{c}" "{loc}" "whatsapp" OR "dm"',
+            f'"{category}" "{loc}" site:facebook.com/pages',
+            f'"{c}" "{loc}" "call now" facebook',
         ]
+        if is_bd:
+            queries.extend([
+                f'site:daraz.com.bd "{c}" "{loc}"',
+                f'site:bdjobs.com "{c}" "{loc}"'
+            ])
+        else:
+            queries.extend([
+                f'site:justdial.com "{category}" "{loc}"',
+                f'site:tripadvisor.com "{category}" "{loc}"'
+            ])
+        return queries[:8]
     elif page == 3:
         return [
-            f"new {category} in {location}",
-            f"affordable {c} {location} contact details",
-            f"{c} {location} map directions",
-            f"popular {category} {location} reviews phone",
-            f'{category} {location} "no website"',
-            f"small {category} business {location}",
-            f"{c} services {location} phone email",
-            f"{location} best {c} shops list",
+            f'"{category}" in "{loc}" "facebook page" phone',
+            f'"{c}" "{loc}" "instagram profile" contact',
+            f'"{category}" "{loc}" site:facebook.com "hours"',
+            f'"{c}" "{loc}" "facebook" "address" "phone"',
+            f'"{category}" "{loc}" local business facebook',
+            f'"{c}" "{loc}" site:instagram.com "linkin.bio"',
+            f'"{category}" "{loc}" site:facebook.com/groups',
+            f'"{category}" "{loc}" site:facebook.com "about"',
         ]
     else:
         return [
-            f"recommended {category} {location}",
-            f"{c} {location} opening hours phone",
-            f"cheapest {c} in {location}",
-            f"{category} {location} walk-in contact",
-            f"nearby {category} {location} 2024 list",
-            f"{c} {location} social media page",
-            f"trusted {c} {location} review",
-            f'{c} "{location}" contact info',
+            f'"{category}" "{loc}" "facebook" "email"',
+            f'"{c}" "{loc}" site:instagram.com "phone"',
+            f'"{category}" "{loc}" site:facebook.com "reviews"',
+            f'"{c}" "{loc}" directory list phone',
+            f'"{c}" "{loc}" "phone number" facebook',
+            f'"{category}" "{loc}" site:facebook.com/events',
+            f'"{category}" "{loc}" site:facebook.com "locations"',
+            f'"{category}" "{loc}" local shops facebook',
         ]
 
 
