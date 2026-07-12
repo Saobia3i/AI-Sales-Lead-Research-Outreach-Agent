@@ -26,10 +26,10 @@ We fixed three critical bugs in [lead_discovery.py](file:///e:/vs%20code%20proje
 
 * **Problem**: The scanner was operating in a black-box mode: if a business had a website, it was completely hidden from the user. If all 10 found businesses had websites, the user saw an empty list, making the tool look like it wasn't working.
 * **Fix**:
-  1. **Backend Integration**: [lead_discovery.py](file:///e:/vs%20code%20projects/lead-research/AI-Sales-Lead-Research-Outreach-Agent/sales_agent/backend/app/services/lead_discovery.py) now returns **all** discovered businesses instead of filtering out ones with websites. Only verified website-less leads are stored in the SQLite database, but all results are exposed to the API.
+  1. **Backend Integration**: [lead_discovery.py](file:///e:/vs%20code%20projects/lead-research/AI-Sales-Lead-Research-Outreach-Agent/sales_agent/backend/app/services/lead_discovery.py) now returns **all** discovered businesses instead of filtering out ones with websites. All results (with and without websites) are saved to the SQLite database and exposed to the API.
   2. **Smart Sorting**: Results are sorted so that **no-website businesses appear first** (ordered by confidence), followed by businesses that have websites.
   3. **Frontend Badge Indicators**: Added visual status chips to the frontend [page.tsx](file:///e:/vs%20code%20projects/lead-research/AI-Sales-Lead-Research-Outreach-Agent/sales_agent/frontend/app/page.tsx) showing `Has Website`, `No Website`, or `Social Page Only`.
-  4. **Frontend Toggle**: Changed the default state of `filterNoWebsite` to `false` (and reset it on new searches). Users can now see all scanned businesses instantly and toggle the "No Website Only" filter if they want to hide active sites.
+  4. **Frontend Toggle & DB View**: Changed the default state of `filterNoWebsite` to `false` (and reset it on new searches). Users can now see all scanned businesses instantly. The database query in `db.py` was also modified to load all stored leads (including those with websites) so they are visible under the "Lead Database" tab.
 
 ---
 

@@ -126,9 +126,6 @@ def save_leads(leads, location: str) -> int:
     try:
         cursor = conn.cursor()
         for lead in leads:
-            if lead.has_website or lead.website_url:
-                continue
-
             # Generate stable unique ID
             lead_id = generate_lead_id(lead.business_name, lead.category, lead.address)
             
@@ -177,7 +174,7 @@ def get_stored_leads(category: str | None = None, location: str | None = None) -
     results = []
     try:
         cursor = conn.cursor()
-        query = f"SELECT * FROM {TABLE_NAME} WHERE has_website = 0 AND COALESCE(website_url, '') = ''"
+        query = f"SELECT * FROM {TABLE_NAME} WHERE 1=1"
         params = []
         
         if category:

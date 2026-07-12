@@ -1603,10 +1603,10 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         service_desc=request.service_description,
     )
 
-    # 5. Save only verified no-website leads to DB.
-    if no_website_leads:
+    # 5. Save all processed leads to SQLite database
+    if processed_leads:
         try:
-            save_leads(no_website_leads, location)
+            save_leads(processed_leads, location)
         except Exception as e:
             logger.error(f"Error saving leads to SQLite: {e}")
             errors.append(f"SQLite Save Error: {e}")
