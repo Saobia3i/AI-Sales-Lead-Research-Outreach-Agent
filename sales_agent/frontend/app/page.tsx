@@ -717,7 +717,7 @@ export default function Home() {
                                 borderColor: "rgba(255, 255, 255, 0.2)",
                               },
                             }}
-                            MenuProps={{ PaperProps: { sx: { maxHeight: 350 } } }}
+                            MenuProps={{ PaperProps: { sx: { maxHeight: 350 } } } as any}
                           >
                             <MenuItem value=""><em>None (Custom location)</em></MenuItem>
                             {Object.entries(GLOBAL_REGIONS).map(([region, cities]) => [
