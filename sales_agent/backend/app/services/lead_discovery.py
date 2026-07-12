@@ -74,6 +74,7 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     # Global social / video
     "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
     "youtube.com", "tiktok.com", "pinterest.com", "threads.net", "snapchat.com",
+    "whatsapp.com",
     # Review & directory sites (Global / US / UK)
     "yelp.com", "tripadvisor.com", "yellowpages.com", "foursquare.com",
     "groupon.com", "mapquest.com", "justdial.com", "zomato.com", "swiggy.com",
@@ -82,18 +83,33 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     "opentable.com", "alignable.com", "superpages.com", "local.com", "manta.com",
     "citysearch.com", "merchantcircle.com", "checkatrade.com", "ratedpeople.com",
     "thomsonlocal.com", "scoot.co.uk",
-    # BD-specific listing sites
+    # BD-specific listing / aggregator / delivery / news sites
     "bikroy.com", "shajgoj.com", "chaldal.com", "daraz.com.bd", "bdsaloons.com",
     "bd-beauty.com", "bangladesh.local.com", "businesslistbd.com",
-    # Aggregators / media
+    "pathao.com", "shohoz.com", "bdjobs.com", "bd.linkedin.com",
+    "bangladeshyellowpages.com", "bdtradein.com", "tradebd.com",
+    "businesshaat.com", "alljobsbd.com", "bdbusinessdirectory.com",
+    "khabo.com.bd", "hungrynaki.com", "khabar.com.bd",
+    "sohoz.com", "shopcart.com.bd", "bagdoom.com",
+    "othoba.com", "shajgoj.com", "aarong.com", "yellow.com.bd",
+    # BD & South Asia news portals — NOT business websites
+    "prothomalo.com", "prothom-alo.com", "kalerkantho.com", "ittefaq.com.bd",
+    "samakal.com", "jugantor.com", "janakantha.com", "inqilab.com",
+    "dailynayadiganta.com", "manabzamin.com", "amardesh.com",
+    "bd24live.com", "banglanews24.com", "risingbd.com", "theindependentbd.com",
+    "tbsnews.net", "businesspostbd.com", "thefinancialexpress.com.bd",
+    "newagebd.net", "dhakatribune.com", "bdnews24.com", "thedailystar.net",
+    "daily-sun.com", "observerbd.com", "unb.com.bd",
+    # Aggregators / media / dev platforms
     "bloomberg.com", "crunchbase.com", "github.com", "medium.com",
     "lh3.googleusercontent.com", "maps.google.com", "google.com",
+    "play.google.com", "apps.apple.com",
     # India / South Asia directories
     "sulekha.com", "indiamart.com", "magicpin.in", "tradeindia.com",
     "connect2india.com", "threebestrated.in", "asklaila.com",
     "yellowpages.in", "yelu.in", "zaubacorp.com",
     # Ecommerce platforms (not own website)
-    "amazon.com", "etsy.com", "shopee.com", "alibaba.com",
+    "amazon.com", "etsy.com", "shopee.com", "alibaba.com", "flipkart.com",
     # Europe / Australia / global directories
     "gelbeseiten.de", "pagesjaunes.fr", "paginegialle.it", "europages.com",
     "hotfrog.com", "cylex.com", "brownbook.net", "tuugo.com",
@@ -111,6 +127,7 @@ _DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     "glassdoor.com", "indeed.com", "wikipedia.org", "reddit.com",
     "quora.com", "yelp.co.uk", "yelp.de", "yelp.fr", "yelp.ca",
     "threebestrated.com", "bark.com", "expertise.com", "clutch.co",
+    "g2.com", "capterra.com", "producthunt.com",
 })
 
 _WEBSITE_BUILDER_DOMAINS: frozenset[str] = frozenset({
@@ -135,12 +152,23 @@ def _normalize_url_for_parsing(url: str) -> str:
 
 
 _MEDIA_AND_INFO_DOMAINS: frozenset[str] = frozenset({
-    "wikipedia.org", "imdb.com", "rottentomatoes.com", "tvguide.com", 
-    "netflix.com", "hulu.com", "youtube.com", "vimeo.com", "goodreads.com", 
-    "spotify.com", "britannica.com", "fandom.com", "tumblr.com", 
-    "reddit.com", "quora.com", "nytimes.com", "bbc.co.uk", "bbc.com", 
-    "cnn.com", "forbes.com", "theguardian.com", "guardian.co.uk", 
-    "amazon.com", "ebay.com", "walmart.com", "target.com"
+    # Entertainment / encyclopedia
+    "wikipedia.org", "imdb.com", "rottentomatoes.com", "tvguide.com",
+    "netflix.com", "hulu.com", "youtube.com", "vimeo.com", "goodreads.com",
+    "spotify.com", "britannica.com", "fandom.com", "tumblr.com",
+    # Discussion platforms
+    "reddit.com", "quora.com",
+    # Global news / media
+    "nytimes.com", "bbc.co.uk", "bbc.com", "cnn.com", "forbes.com",
+    "theguardian.com", "guardian.co.uk", "reuters.com", "apnews.com",
+    "huffpost.com", "buzzfeed.com", "businessinsider.com", "techcrunch.com",
+    # BD news portals (same as directory list — belt-and-suspenders)
+    "prothomalo.com", "kalerkantho.com", "ittefaq.com.bd", "samakal.com",
+    "jugantor.com", "bdnews24.com", "thedailystar.net", "dhakatribune.com",
+    "risingbd.com", "tbsnews.net", "newagebd.net", "daily-sun.com",
+    "thefinancialexpress.com.bd", "businesspostbd.com", "unb.com.bd",
+    # Ecommerce giants (not a business's own site)
+    "amazon.com", "ebay.com", "walmart.com", "target.com",
 })
 
 
@@ -590,12 +618,13 @@ async def verify_business_website(
                 if is_active:
                     logger.info(f"Programmatic verification confirmed official website for '{business_name}': {resolved}")
                     return True, resolved, 0.95
+                # BUG FIX: Liveness check failed — URL is dead/unreachable.
+                # Do NOT claim they have a website. Continue checking other candidates.
                 logger.info(
-                    "Search found plausible official website for %r but liveness check failed: %s",
+                    "Search found plausible official website for %r but liveness check failed (dead URL): %s",
                     business_name,
                     cand_url,
                 )
-                return True, cand_url, 0.9
 
     plausible_candidate_urls = [
         cand_url for cand_url in candidate_urls[:8]
@@ -638,12 +667,23 @@ async def verify_business_website(
                     # LLM said "has website" but the URL is just a social page.
                     # Treat as no website with moderate confidence.
                     return False, None, 0.80
+                # BUG FIX: If liveness check fails, do NOT blindly trust the LLM.
+                # A non-live URL means the business may not actually have an active site.
                 is_active, resolved = await check_url_active(verif.official_website_url)
-                return True, resolved or verif.official_website_url, min(max(verif.confidence, 0.9), 1.0)
+                if is_active:
+                    return True, resolved, min(max(verif.confidence, 0.9), 1.0)
+                # URL found by LLM is dead — treat as no website (high confidence)
+                logger.info(
+                    "LLM suggested website URL for %r but liveness check failed: %s",
+                    business_name,
+                    verif.official_website_url,
+                )
+                return False, None, 0.85
             # LLM says no website
             if plausible_candidate_urls:
-                return True, plausible_candidate_urls[0], max(verif.confidence, 0.6)
-            # FIX: LLM explicitly says no website → high confidence
+                # We have a candidate but LLM disagreed — trust LLM over unverified candidates
+                return False, None, max(verif.confidence, 0.80)
+            # LLM explicitly says no website → high confidence
             return False, None, max(verif.confidence, 0.85)
     except Exception as e:
         logger.warning(f"LLM website verification failed for '{business_name}': {e}")
@@ -833,19 +873,32 @@ _INTL_ADDRESS_RE = re.compile(
 
 
 def _has_contact_medium(lead: LeadBusiness) -> bool:
-    """Return True if there is at least one practical contact/reach channel."""
-    if lead.phone or lead.email or lead.google_maps_url:
+    """Return True if there is at least one practical contact/reach channel.
+
+    Intentionally broad — address, source URL, or even just knowing the
+    business name is enough for us to pursue outreach (find them on maps,
+    visit in person, search on social media, etc.).
+    """
+    # Direct contact channels
+    if lead.phone or lead.email:
         return True
+    # Location / map channels
+    if lead.google_maps_url or lead.address:
+        return True
+    # Social / directory pages
     if lead.social_links:
         return True
-    if lead.source_url and _is_directory_or_social(lead.source_url):
+    # Source URL (any kind — it's how we found them)
+    if lead.source_url:
         return True
     return False
 
 
 def _should_keep_processed_lead(lead: LeadBusiness) -> bool:
-    """Only keep valid local businesses that have at least one practical contact channel
-    so we can actually perform sales outreach.
+    """Keep any business that has a name plus at least one piece of info.
+
+    business_name is always present, so we only discard leads that have
+    literally zero contact signals (extremely rare, usually extraction noise).
     """
     return _has_contact_medium(lead)
 
@@ -1391,28 +1444,53 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
             website_url = None
 
         if website_url:
-            # LLM found a potential standalone website
-            has_website = True
-            is_active, resolved_url = await check_url_active(website_url)
-            if is_active:
-                website_url = resolved_url
-                confidence = 0.95
-            else:
-                # Keep has_website = True but double check if Google has an active one
-                has_web, web_url, verif_conf = await verify_business_website(
-                    eb.business_name, location
+            # First gate: URL must look like the business's own website,
+            # not a news article, aggregator page, or unrelated live site.
+            effective_url = website_url
+            url_looks_official = _is_plausible_official_website(
+                eb.business_name, website_url
+            )
+            if not url_looks_official:
+                # LLM gave us a URL but it doesn't match the business name —
+                # move it to social/source and do a proper web search instead.
+                logger.info(
+                    "LLM-extracted URL for %r doesn't look like their own site (%s). "
+                    "Falling back to web verification.",
+                    eb.business_name,
+                    website_url,
                 )
-                if has_web and web_url:
-                    website_url = web_url
-                    confidence = verif_conf
+                website_url = None
+                # fall through to the else-branch below
+
+            if website_url:
+                # Second gate: URL must actually be reachable
+                is_active, resolved_url = await check_url_active(website_url)
+                if is_active:
+                    has_website = True
+                    website_url = resolved_url
+                    confidence = 0.95
                 else:
-                    # Original URL was dead and no alternative found — still
-                    # mark as "has website" with moderate confidence since
-                    # we did find a URL in the snippets.
-                    confidence = 0.7
-        else:
-            # No website found from snippet extraction — Google-search to
-            # check if the business actually has one.
+                    # URL is official-looking but dead — search for an active one
+                    logger.info(
+                        "LLM-extracted URL for %r is dead (%s). Running web verification.",
+                        eb.business_name,
+                        effective_url,
+                    )
+                    has_web, web_url, verif_conf = await verify_business_website(
+                        eb.business_name, location
+                    )
+                    if has_web and web_url:
+                        has_website = True
+                        website_url = web_url
+                        confidence = verif_conf
+                    else:
+                        has_website = False
+                        website_url = None
+                        confidence = verif_conf if verif_conf > 0.5 else 0.75
+
+        if not website_url and not has_website:
+            # No website found from snippet extraction OR LLM URL was rejected —
+            # Google-search to check if the business actually has one.
             has_web, web_url, verif_conf = await verify_business_website(
                 eb.business_name, location
             )
@@ -1420,14 +1498,9 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                 has_website = True
                 website_url = web_url
                 confidence = verif_conf
-                # Try to resolve final URL, but keep the web_url if ping fails
-                is_active, resolved_url = await check_url_active(web_url)
-                if is_active:
-                    website_url = resolved_url
-                    confidence = max(confidence, 0.9)
             else:
-                # FIX: verify_business_website now returns high confidence
-                # (0.85-0.95) when it finds no website, so propagate that.
+                # verify_business_website returns high confidence (0.85-0.95)
+                # when it finds no website — propagate that.
                 has_website = False
                 confidence = verif_conf
 
@@ -1476,9 +1549,8 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
 
     processed_leads = list(await asyncio.gather(*tasks))
     processed_leads = [lead for lead in processed_leads if _should_keep_processed_lead(lead)]
-    leads = _only_no_website_leads(processed_leads)
 
-    if not leads:
+    if not processed_leads:
         return LeadSearchResponse(
             leads=[], total_found=0, total_without_website=0,
             draft_email=LeadDraftEmail(
@@ -1487,13 +1559,20 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
                 body="Hi there,\n\nI noticed you have a great business but couldn't find a contact channel yet...",
             ),
             search_query_used=queries[0],
-            errors=errors + ["Businesses were found, but they appeared to have websites and no usable contact medium."],
+            errors=errors + ["No businesses survived the quality filters. Try a different category or location."],
         )
 
-    # Sort by confidence that no official website was found.
-    leads.sort(key=lambda x: -x.confidence_no_website)
+    # Separate no-website leads for saving to DB
+    no_website_leads = _only_no_website_leads(processed_leads)
+    total_without_website = len(no_website_leads)
 
-    total_without_website = len(leads)
+    # Sort: no-website leads first (sorted by confidence), then website leads
+    processed_leads.sort(
+        key=lambda x: (
+            0 if not x.has_website else 1,          # no-website first
+            -x.confidence_no_website,                # highest confidence first
+        )
+    )
 
     # ------------------------------------------------------------------
     # 4. Generate global email template
@@ -1506,18 +1585,17 @@ async def find_leads_pipeline(request: LeadSearchRequest) -> LeadSearchResponse:
         service_desc=request.service_description,
     )
 
-    # 5. Save only verified no-website leads. Businesses with websites are
-    # processed for exclusion, but they are not prospects for this workflow.
-    if leads:
+    # 5. Save only verified no-website leads to DB.
+    if no_website_leads:
         try:
-            save_leads(leads, location)
+            save_leads(no_website_leads, location)
         except Exception as e:
             logger.error(f"Error saving leads to SQLite: {e}")
             errors.append(f"SQLite Save Error: {e}")
 
     return LeadSearchResponse(
-        leads=leads,
-        total_found=len(leads),
+        leads=processed_leads,          # ALL businesses — frontend filters if needed
+        total_found=len(processed_leads),
         total_without_website=total_without_website,
         draft_email=global_email,
         search_query_used=queries[0],

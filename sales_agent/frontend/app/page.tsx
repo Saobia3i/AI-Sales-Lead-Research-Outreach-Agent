@@ -264,7 +264,7 @@ export default function Home() {
   const [selectedLead, setSelectedLead] = useState<LeadBusiness | null>(null);
   const [customOutreach, setCustomOutreach] = useState<LeadOutreachDrafts | null>(null);
   const [isCustomOutreachLoading, setIsCustomOutreachLoading] = useState(false);
-  const [filterNoWebsite, setFilterNoWebsite] = useState(true);
+  const [filterNoWebsite, setFilterNoWebsite] = useState(false);
   const [searchQueryUsed, setSearchQueryUsed] = useState("");
   const [searchPage, setSearchPage] = useState(1);
   const [mainTab, setMainTab] = useState<"scanner" | "database">("scanner");
@@ -451,6 +451,7 @@ export default function Home() {
     setCustomOutreach(null);
     setLeads([]);
     setHasSearched(false);
+    setFilterNoWebsite(false); // always show all results on new search
 
     try {
       const response = await fetch(`${apiBase}/api/v1/find_leads`, {
