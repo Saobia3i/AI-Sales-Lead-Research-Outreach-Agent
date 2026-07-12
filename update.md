@@ -1,86 +1,152 @@
-# Technical Update & Changes Summary
+# Deep Dive: Pipeline, Architecture & Lead Strategy
 
-This document summarizes the recent updates, bug fixes, and strategic improvements implemented in the **AI Sales Lead Research & Outreach Agent** codebase.
-
----
-
-## 1. Bug Fixes & Backend Logic Refinements
-
-### A. CORS Policy Configuration Fix
-* **Problem**: The frontend development server was running on port `3001` (due to port `3000` being in use). The backend had a hardcoded `CORS_ORIGINS` config in `.env` allowing only `localhost:3000`, causing browser fetch requests to fail with CORS policy errors.
-* **Fix**: Added `http://localhost:3001` and `http://localhost:3002` to `CORS_ORIGINS` in [backend/.env](file:///e:/vs%20code%20projects/lead-research/AI-Sales-Lead-Research-Outreach-Agent/sales_agent/backend/.env) to ensure local developer workflows work smoothly across ports.
-
-### B. Website Verification Logic Bugs
-We fixed three critical bugs in [lead_discovery.py](file:///e:/vs%20code%20projects/lead-research/AI-Sales-Lead-Research-Outreach-Agent/sales_agent/backend/app/services/lead_discovery.py) that caused false positive detections (marking businesses as "Has Website" when they actually didn't have one):
-1. **Dead Plausible URLs**: Previously, if search results returned a domain matching the business name, but that site was dead or unreachable, the system still returned `has_website=True` with `0.9` confidence. Now, if the active liveness check fails, it continues testing other candidates.
-2. **LLM Verification Fallback**: Previously, if the LLM extracted a custom website URL but the server active check failed, the system blindly trusted the URL and marked `has_website=True`. We added validation to ensure if the active check fails, the lead is evaluated as `has_website=False` with high confidence.
-3. **Dead LLM URLs in `process_business`**: If the LLM returned a website URL but it was dead, the logic used to leave `has_website=True` with a lower confidence value. We updated this to correctly set `has_website=False` and set `website_url=None` if no alternative live site can be discovered.
-
-### C. Relaxed Lead Contact Filtering
-* **Problem**: Valid local businesses were being discarded by `_has_contact_medium()` because they only had an address or a source directory page (like a Yelp listing) instead of a direct phone/email. This resulted in the error message `"Businesses were found, but they appeared to have websites and no usable contact medium."`
-* **Fix**: Broadened the contact medium check. Now, a business name accompanied by **an address, a Google Maps link, a social page, or a source URL** is counted as a valid outreach prospect.
+This document details the architecture, search algorithms, verification mechanisms, and confidence models used in the **AI Sales Lead Research & Outreach Agent** to find local businesses and analyze their web presence.
 
 ---
 
-## 2. Shift to "Show All" Results Layout
+## 1. System Architecture & Flow
 
-* **Problem**: The scanner was operating in a black-box mode: if a business had a website, it was completely hidden from the user. If all 10 found businesses had websites, the user saw an empty list, making the tool look like it wasn't working.
-* **Fix**:
-  1. **Backend Integration**: [lead_discovery.py](file:///e:/vs%20code%20projects/lead-research/AI-Sales-Lead-Research-Outreach-Agent/sales_agent/backend/app/services/lead_discovery.py) now returns **all** discovered businesses instead of filtering out ones with websites. All results (with and without websites) are saved to the SQLite database and exposed to the API.
-  2. **Smart Sorting**: Results are sorted so that **no-website businesses appear first** (ordered by confidence), followed by businesses that have websites.
-  3. **Frontend Badge Indicators**: Added visual status chips to the frontend [page.tsx](file:///e:/vs%20code%20projects/lead-research/AI-Sales-Lead-Research-Outreach-Agent/sales_agent/frontend/app/page.tsx) showing `Has Website`, `No Website`, or `Social Page Only`.
-  4. **Frontend Toggle & DB View**: Changed the default state of `filterNoWebsite` to `false` (and reset it on new searches). Users can now see all scanned businesses instantly. The database query in `db.py` was also modified to load all stored leads (including those with websites) so they are visible under the "Lead Database" tab.
-
----
-
-## 3. New Targeted Search Strategy (Surfacing Offline Businesses)
-
-* **Problem**: Broad Google searches naturally rank businesses that are search-engine-optimized and already have websites. This meant the search results were highly biased towards companies that did *not* need our services.
-* **Solution**: Rewrote the query generator `_build_search_queries()` to target places where offline-only businesses operate:
-  1. **Social Profile Focus**: Queries now search specifically for Facebook and Instagram profiles using operators like `site:facebook.com` and `site:instagram.com` alongside business categories and locations.
-  2. **Localized Directory Crawling**:
-     * **For Bangladesh**: Automatically appends directory sites like `site:bikroy.com` and `site:businesslistbd.com` to the search list.
-     * **For Global/US**: Appends sites like `site:yelp.com` and `site:yellowpages.com`.
-  3. **Offline Keywords**: Uses specific keyword patterns like `"no website"`, `"call now"`, `"whatsapp" OR "dm"` to surface less web-active businesses.
-
----
-
-## 4. Current Architecture Overview
+The system runs a multi-stage pipeline combining target queries, search aggregations, structured LLM extraction, and multi-step verification checks.
 
 ```
-[Frontend Input: Category & Location]
-                │
-                ▼ (POST /api/v1/find_leads)
-       [FastAPI Backend]
-                │
-                ▼ (Run parallel targeted queries)
-  ┌─────────────┴─────────────┐
-  ▼ (BD location)             ▼ (US/Global location)
-[Facebook, Instagram,      [Facebook, Instagram,
- Bikroy, BusinessListBD]    Yelp, YellowPages]
-  └─────────────┬─────────────┘
-                ▼
-  [Scrape & Search: Firecrawl + DuckDuckGo]
-                │
-                ▼
-   [LLM Data Extraction]
-                │
-                ▼
-  [Liveness & Verification Checks] ──► (Dead site or only social links) ──► [Mark: No Website / Social Only]
-                │
-                ▼ (Live Custom Domain)
-         [Mark: Has Website]
-                │
-                ▼ (Sort: No Website First)
-   ┌────────────┴────────────┐
-   ▼                         ▼
-[SQLite DB]           [API Response]
-(Only save no-web)    (Returns all discovered)
-                             │
-                             ▼
-                      [Frontend: Render List with Badges]
+                  [Frontend Request: Category & Location]
+                                    │
+                                    ▼ (POST /api/v1/find_leads)
+                           [FastAPI Controller]
+                                    │
+                                    ▼
+                      [Targeted Query Generator]
+                                    │
+     ┌──────────────────────────────┴──────────────────────────────┐
+     ▼ (BD Location)                                               ▼ (Global/US Location)
+[Facebook, Instagram, Bikroy,                                 [Facebook, Instagram, Yelp,
+ BusinessListBD, Local Search]                                 YellowPages, Local Search]
+     └──────────────────────────────┬──────────────────────────────┘
+                                    ▼
+                       [Parallel Search Engine]
+                      (Firecrawl Search + DDGS)
+                                    │
+                                    ▼ (Snippet Aggregation)
+                    [LLM Structured Data Extractor]
+             (Extracts Business name, contact, social, source)
+                                    │
+                                    ▼
+                    [Liveness & Verification Loop]
+           (Resolves domains, filters out directories & news,
+            validates custom site accessibility via Firecrawl/HTTP)
+                                    │
+                                    ▼
+                      [Confidence & Sorting Node]
+               (Calculates confidence_no_website & sorts)
+                                    │
+     ┌──────────────────────────────┴──────────────────────────────┐
+     ▼                                                             ▼
+[SQLite Lead Database]                                     [API Response JSON]
+(Saves all results, categorizes                            (Pushed to UI with 
+ website status for historical tracking)                    live badges)
 ```
 
-### Active Services:
-* **Backend Dev Server**: Running on [http://localhost:8000](http://localhost:8000) (Background Task ID `task-133`) with automatic hot-reloading active.
-* **Frontend Dev Server**: Running on [http://localhost:3001](http://localhost:3001).
+---
+
+## 2. Search Strategy (Targeted Discovery)
+
+Instead of running generic web searches that return highly optimized businesses (which almost always have active websites), the generator targets platforms where small, offline, or local-first businesses exist.
+
+### Core Query Patterns
+Queries are built using operators (`site:`) and terms highlighting missing websites:
+1. **Facebook Pages & Profiles (`site:facebook.com`, `site:facebook.com/p/`)**: Businesses that use Facebook as their primary landing page.
+2. **Instagram Profiles (`site:instagram.com`)**: Primarily used by lifestyle, beauty, and local food brands.
+3. **Localized Listing Directories**:
+   * **For Bangladesh**: Targets sites like `site:bikroy.com`, `site:businesslistbd.com`, `site:daraz.com.bd`.
+   * **For Global/US**: Targets `site:yelp.com`, `site:yellowpages.com`, `site:justdial.com`.
+4. **Offline Indicators**: Appends terms like `"no website"`, `"call now"`, `"whatsapp" OR "dm"`.
+
+---
+
+## 3. Extraction & Rejection Strategy
+
+Once search snippets are gathered, the system uses a structured LLM (Pydantic model) to parse them into individual business listings. A strict filtering process separates true local businesses from informational clutter.
+
+### A. Non-Business Rejection (Quality Gate)
+The system rejects non-business listings using keyword matching, domain verification, and snippet analysis:
+* **Media Entities**: Rejects TV shows, movies, books, songs, albums, and Wikipedia pages (e.g., searches for "The Gym" returning a TV show).
+* **Low-Quality Pages**: Filters lists like "Top 10 best...", forum discussions, Reddit threads, and broad search result pages.
+* **Permanently Closed Listings**: Excludes defunct businesses.
+
+### B. Directory & Social Media Blacklist (`_DIRECTORY_DOMAINS`)
+To avoid identifying a business's Facebook page or Yelp listing as their official website, the backend keeps a comprehensive blacklist of directory, aggregator, and social media domains. This includes:
+* **Socials**: Facebook, Instagram, LinkedIn, Twitter/X, TikTok, YouTube, WhatsApp.
+* **BD Directories**: Bikroy, Shajgoj, Daraz, Pathao, Shohoz, Bdjobs, Bangladesh Yellow Pages.
+* **Global Directories**: Yelp, TripAdvisor, YellowPages, Foursquare, Manta, local.com, Connect2India.
+* **BD & South Asia News Portals**: Prothom Alo, Kaler Kantho, Daily Star, Dhaka Tribune, etc.
+* **E-Commerce Giants**: Amazon, Etsy, Shopee, Alibaba, Flipkart.
+
+*Note: Hosted website builders (Wix, WordPress, Squarespace, Weebly, Webflow, Carrd, Square.site, sites.google.com) are **not** blacklisted, as these count as valid standalone websites.*
+
+---
+
+## 4. Verification & Liveness Strategy
+
+Every potential business website is validated using a two-step check:
+
+```
+[Candidate URL Extracted]
+          │
+          ▼
+Is URL in Directory Blacklist? ──► YES ──► Reject URL (Move to Social/Source Link)
+          │
+          ▼ NO
+Does the domain look official? (Matches Business Name)
+          │
+          ├─► NO  ──► Reject URL, run fallback Google Search verification
+          │
+          ▼ YES
+Active Liveness Verification
+          │
+          ├─► 1. Attempt Firecrawl Scrape (handles Cloudflare/JS/SSL checks)
+          │
+          └─► 2. Fallback to Raw HTTP HEAD/GET (via httpx client)
+          │
+          ▼
+Website Active? ──► NO  ──► Treat as "No Website" (run fallback search)
+          │
+          ▼ YES
+Confirmed "Has Website"
+```
+
+* **Official Domain Plausibility**: Verified by checking if significant words from the business name match the domain label, preventing random listings or news articles from being flagged as the official business site.
+* **Active Verification**: Ensures the site is live. If a domain is dead or unreachable, it is treated as "No Website" rather than leaving it in an uncertain state.
+
+---
+
+## 5. Confidence Score Strategy
+
+The confidence metric (`confidence_no_website`) indicates how sure the agent is that a business **does not have** an official website.
+
+### Confidence Formula & Semantics:
+* **For "Has Website" = True**:
+  $$\text{confidence\_no\_website} = \max(0.0, 1.0 - \text{verification\_confidence})$$
+  *If verification is $95\%$ confident they have a website, the confidence that they lack one drops to $5\%$ ($0.05$).*
+
+* **For "Has Website" = False**:
+  $$\text{confidence\_no\_website} = \text{verification\_confidence}$$
+  *If verification confirms they lack a website, the value maps directly to the confidence score.*
+
+### Confidence Value Mapping:
+* **$0.95$**: Programmatic match (a plausible domain was found in search results, checked, and found to be active).
+* **$0.85$**: The LLM explicitly analyzed the search results for the business name + location and found no evidence of a custom website.
+* **$0.80$**: LLM disagrees with a plausible search result URL (trusts LLM context over unverified/dead candidates).
+* **$0.75$**: Scraped candidate URLs were verified and found to be dead or unreachable, with no live alternative detected.
+* **$0.40$**: Search failure (rate limits or API errors). The agent assigns low confidence to prevent discarding the lead while alerting the user of low-quality results.
+
+---
+
+## 6. Database Storage & Frontend Display
+
+1. **Database Persistence**: Every scanned business (both with and without websites) is saved into the SQLite database (`leads.db`) to preserve historical scanning data.
+2. **Display & Sorting**: 
+   * **Sort Order**: The UI and API responses order results with **no-website businesses at the top**, followed by businesses with websites.
+   * **UI Badges**: Shows distinct badges based on status:
+     * `No Website` (Red): Verified to have no standalone site.
+     * `Social Page Only` (Orange): Business runs purely on Facebook/Instagram/Yelp.
+     * `Has Website` (Green): Verified active custom domain.
