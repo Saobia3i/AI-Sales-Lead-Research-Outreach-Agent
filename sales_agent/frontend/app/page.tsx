@@ -108,7 +108,8 @@ type LeadSearchResponse = {
   errors: string[];
 };
 
-const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const rawApiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "https://ai-sales-lead-research-outreach-agent-7p9e.onrender.com";
+const apiBase = rawApiBase.replace(/\/+$/, "");
 
 const theme = createTheme({
   palette: {

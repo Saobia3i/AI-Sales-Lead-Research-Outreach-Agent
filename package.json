@@ -1,0 +1,11 @@
+{
+  "name": "ai-sales-lead-research-outreach-agent-root",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "cd sales_agent/frontend && npm run dev",
+    "build": "cd sales_agent/frontend && npm install && npm run build",
+    "start": "cd sales_agent/frontend && npm run start",
+    "lint": "cd sales_agent/frontend && npm run lint"
+  }
+}
