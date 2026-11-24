@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-# pyrefly: ignore [missing-import]
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,9 +17,11 @@ class Settings(BaseSettings):
     max_search_calls_per_run: int = Field(default=6, alias="MAX_SEARCH_CALLS_PER_RUN")
     research_cache_ttl_seconds: int = Field(default=172800, alias="RESEARCH_CACHE_TTL_SECONDS")
     cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
-    max_lead_search_results: int = Field(default=20, alias="MAX_LEAD_SEARCH_RESULTS")
-    website_check_timeout_seconds: int = Field(default=5, alias="WEBSITE_CHECK_TIMEOUT")
     firecrawl_api_key: str | None = Field(default=None, alias="FIRECRAWL_API_KEY")
+    google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
+    serper_api_key: str | None = Field(default=None, alias="SERPER_API_KEY")
+    nominatim_url: str = Field(default="https://nominatim.openstreetmap.org", alias="NOMINATIM_URL")
+    max_search_area_km2: float = Field(default=15000, alias="MAX_SEARCH_AREA_KM2")
     smtp_host: str = Field(default="smtp.gmail.com", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")
     smtp_user: str | None = Field(default=None, alias="SMTP_USER")

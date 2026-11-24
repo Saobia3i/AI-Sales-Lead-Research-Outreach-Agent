@@ -36,3 +36,7 @@ Thumbs.db
 # Archives
 *.zip
 sales_agent.zip
+
+# Local data
+*.db
+*.sqlite3

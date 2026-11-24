@@ -37,24 +37,22 @@ The project has two main workflows:
 
 ## Current Lead Discovery Behavior
 
-The current lead discovery pipeline lives in:
+The pipeline lives in `sales_agent/backend/app/leads/` (see `update.md` for the full deep dive):
 
-`sales_agent/backend/app/services/lead_discovery.py`
+- `pipeline.py`: geocode the location, query place sources in parallel, merge duplicates, skip stored businesses, verify, save.
+- `sources/`: Google Places API (optional key), Serper Maps (optional key), OpenStreetMap Overpass (free), and Facebook/Instagram/listing profile pages found by web search.
+- `verify.py`: per-business website verdict (`has_website`, `broken_website`, `no_website`, `unverified`), an evidence-based `confidence_no_website`, and human-readable `evidence`.
+- `matching.py` / `urls.py`: strict name↔domain matching, phone matching, and social/listing/media URL classification.
+- `outreach.py`: drafts whose claims follow the verified status.
 
 Important behavior:
 
-- `find_leads_pipeline` builds multiple real search queries for the requested category and location.
-- Search discovery aggregates both Firecrawl Search and DDGS results.
-- Results are deduplicated by URL before LLM extraction.
-- Both exact and fuzzy query styles are used:
-  - Exact example: `"Gyms" "New York" facebook page`
-  - Fuzzy example: `Gyms New York facebook page`
-- The system does not fabricate businesses. Businesses are extracted from real search result snippets.
-- The main target is businesses without official websites.
-- A lead does not need both email and phone; one contact medium is enough.
-- For every extracted business, website verification uses Firecrawl Search/Scrape and falls back where needed.
-- Social and directory URLs such as Facebook, Instagram, Yelp, TripAdvisor, YellowPages, Google Maps, etc. are not counted as official websites.
-- Website builders such as Wix, WordPress, Squarespace, and Weebly do count as websites.
+- Businesses come from place data (maps listings), not from parsing generic search snippets.
+- Locations larger than `MAX_SEARCH_AREA_KM2` (for example a whole country) are rejected.
+- A website only counts if the domain matches the name and the page ties it to the same location (phone, address or city), or an LLM same-business check confirms it.
+- HTTP 401/403/429 counts as "site exists"; parked or dead domains are `broken_website`.
+- Failed or empty searches lower confidence and give `unverified`; they are never treated as proof of no website.
+- Web search uses Serper, then Firecrawl, then DDGS, with retries and concurrency limits.
 
 ## LLM Provider Behavior
 
@@ -85,41 +83,13 @@ OpenRouter responses are validated against the same Pydantic schema requested by
 
 ## Lead Database Behavior
 
-The database service lives in:
+`sales_agent/backend/app/services/db.py`, SQLite table `leads` (path overridable with `LEADS_DB_PATH`).
 
-`sales_agent/backend/app/services/db.py`
-
-SQLite table: `leads`
-
-Stored columns:
-
-- `id`
-- `business_name`
-- `category`
-- `address`
-- `phone`
-- `email`
-- `has_website`
-- `website_url`
-- `google_maps_url`
-- `social_links`
-- `source_url`
-- `location`
-- `scanned_at`
-
-Database functions:
-
-- `init_db()`
-- `save_leads(leads, location)`
-- `get_stored_leads(category=None, location=None)`
-- `get_discovered_names(category, location)`
-- `delete_stored_lead(lead_id)`
-
-Deduplication:
-
-- Lead IDs are generated from business name, category, and address.
-- Duplicate inserts are ignored.
-- Already-discovered business names for the same category and location are passed into the extraction prompt and also filtered after extraction.
+- Columns: the original ones plus `website_status`, `evidence`, `sources`, `dedupe_key`, `rating`, `review_count` (added to old databases automatically).
+- `save_leads` upserts, so rescans refresh rows.
+- `get_known_lead_keys(category, location)` returns stored dedupe keys and names for a location; the pipeline skips those businesses.
+- `get_stored_leads(category, location, status)`, `delete_stored_lead(id)`.
+- `leads.db` is git-ignored.
 
 ## Backend API
 
@@ -173,29 +143,7 @@ The UI has two main tabs:
 
 ## Environment Variables
 
-Backend `.env` should include:
-
-```env
-GROQ_API_KEY=your-groq-api-key
-GROQ_MODEL=llama-3.3-70b-versatile
-OPENROUTER_API_KEY=your-openrouter-api-key
-OPENROUTER_MODEL=openai/gpt-4o-mini
-OPENROUTER_SITE_URL=http://localhost:3000
-OPENROUTER_APP_NAME=AI Sales Lead Research Agent
-FIRECRAWL_API_KEY=your-firecrawl-api-key
-CORS_ORIGINS=http://localhost:3000
-```
-
-Frontend `.env.local` should include:
-
-```env
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-```
-
-Important:
-
-- `config.py` loads `.env` relative to the backend working directory.
-- Start the backend from `sales_agent/backend` so `FIRECRAWL_API_KEY`, `GROQ_API_KEY`, and `OPENROUTER_API_KEY` load correctly.
+See `sales_agent/backend/.env.example`. Every key is optional: the scanner runs on OpenStreetMap + DDGS with no keys. `GOOGLE_PLACES_API_KEY` or `SERPER_API_KEY` gives the biggest accuracy gain. `GROQ_API_KEY` / `OPENROUTER_API_KEY` enable LLM same-business checks and outreach drafts.
 
 ## Local Development
 
@@ -222,25 +170,10 @@ http://localhost:3000
 
 ## Verification Commands
 
-Backend syntax:
-
-```powershell
-cd "e:\vs code projects\lead-research\AI-Sales-Lead-Research-Outreach-Agent\sales_agent\backend"
-venv\Scripts\python.exe -B -c "from pathlib import Path; [compile(p.read_text(encoding='utf-8'), str(p), 'exec') for p in list(Path('app').rglob('*.py')) + [Path('test_db.py')]]; print('syntax ok')"
-```
-
-Database unit test:
-
-```powershell
-cd "e:\vs code projects\lead-research\AI-Sales-Lead-Research-Outreach-Agent\sales_agent\backend"
-venv\Scripts\python.exe -B -m unittest test_db.py
-```
-
-Frontend type check:
-
-```powershell
-cd "e:\vs code projects\lead-research\AI-Sales-Lead-Research-Outreach-Agent\sales_agent\frontend"
-npx tsc --noEmit --incremental false
+```bash
+cd sales_agent/backend && python -m pytest -q
+cd sales_agent/backend && python -m scripts.scan "bakery" "Dhaka, Bangladesh" --max 10
+cd sales_agent/frontend && npx tsc --noEmit --incremental false
 ```
 
 ## Recent Implementation Notes
@@ -253,3 +186,5 @@ npx tsc --noEmit --incremental false
 - Updated lead discovery to aggregate real Firecrawl Search and DDGS search results.
 - Restored exact quoted queries while keeping fuzzy unquoted queries for broader coverage.
 - Added visible frontend warnings when search returns errors or no leads.
+- Rebuilt lead discovery around place data (Google Places / Serper Maps / OpenStreetMap) with evidence-based website verdicts; removed the snippet-title fallback extractor that stored listicles and PDFs as businesses.
+- Fixed a research pipeline crash when a DDGS search failed (`None` results).

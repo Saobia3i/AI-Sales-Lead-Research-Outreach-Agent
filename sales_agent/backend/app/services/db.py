@@ -1,274 +1,223 @@
-import sqlite3
-import json
+"""SQLite persistence for discovered leads."""
+from __future__ import annotations
+
 import hashlib
-import os
+import json
 import logging
-from datetime import UTC, datetime
-from urllib.parse import urlparse
+import os
+import sqlite3
+from datetime import datetime, timezone
+from threading import Lock
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "leads.db")
+_DEFAULT_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "leads.db")
 TABLE_NAME = "leads"
 
-_DIRECTORY_OR_SOCIAL_DOMAINS: frozenset[str] = frozenset({
-    "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
-    "youtube.com", "tiktok.com", "pinterest.com", "threads.net", "snapchat.com",
-    "yelp.com", "tripadvisor.com", "yellowpages.com", "foursquare.com",
-    "groupon.com", "mapquest.com", "justdial.com", "zomato.com", "swiggy.com",
-    "foodpanda.com", "happycow.net", "yell.com", "bbb.org", "trustpilot.com",
-    "angi.com", "homeadvisor.com", "thumbtack.com", "houzz.com", "nextdoor.com",
-    "opentable.com", "alignable.com", "superpages.com", "local.com", "manta.com",
-    "citysearch.com", "merchantcircle.com", "google.com", "maps.google.com",
-    # Europe / Australia / global directories
-    "gelbeseiten.de", "pagesjaunes.fr", "paginegialle.it", "europages.com",
-    "hotfrog.com", "cylex.com", "brownbook.net", "tuugo.com",
-    "kompass.com", "truelocal.com.au", "yellowpages.com.au",
-    "glassdoor.com", "indeed.com", "wikipedia.org", "reddit.com",
-    "quora.com", "threebestrated.com", "bark.com", "expertise.com",
-})
+_COLUMNS: dict[str, str] = {
+    "id": "TEXT PRIMARY KEY",
+    "business_name": "TEXT NOT NULL",
+    "category": "TEXT",
+    "address": "TEXT",
+    "phone": "TEXT",
+    "email": "TEXT",
+    "has_website": "INTEGER",
+    "website_url": "TEXT",
+    "google_maps_url": "TEXT",
+    "social_links": "TEXT",
+    "source_url": "TEXT",
+    "location": "TEXT",
+    "confidence_no_website": "REAL DEFAULT 0.0",
+    "scanned_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    "website_status": "TEXT",
+    "evidence": "TEXT",
+    "sources": "TEXT",
+    "dedupe_key": "TEXT",
+    "rating": "REAL",
+    "review_count": "INTEGER",
+}
+_initialized_for: str | None = None
+_init_lock = Lock()
 
 
-def _normalize_url_for_parsing(url: str) -> str:
-    if not url:
-        return ""
-    url = url.strip().lower()
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return url
+def db_path() -> str:
+    return os.environ.get("LEADS_DB_PATH") or _DEFAULT_DB
 
 
-def _looks_like_standalone_source_url(url: str | None) -> bool:
-    if not url:
-        return False
-    try:
-        normalized = _normalize_url_for_parsing(url)
-        parsed = urlparse(normalized)
-        domain = parsed.netloc.removeprefix("www.")
-        if not domain or "." not in domain:
-            return False
-        return not any(
-            domain == blocked or domain.endswith("." + blocked)
-            for blocked in _DIRECTORY_OR_SOCIAL_DOMAINS
-        )
-    except Exception:
-        return False
-
-def get_connection():
-    """Returns a connection to the SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
+def get_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path())
     conn.row_factory = sqlite3.Row
     return conn
 
-def init_db():
-    """Initializes the database and creates the leads table if it doesn't exist."""
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-                id TEXT PRIMARY KEY,
-                business_name TEXT NOT NULL,
-                category TEXT,
-                address TEXT,
-                phone TEXT,
-                email TEXT,
-                has_website INTEGER,
-                website_url TEXT,
-                google_maps_url TEXT,
-                social_links TEXT,
-                source_url TEXT,
-                location TEXT,
-                confidence_no_website REAL DEFAULT 0.0,
-                scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Migrate: add confidence_no_website column if it doesn't exist
+def init_db() -> None:
+    """Create the table and add any columns missing from older databases."""
+    global _initialized_for
+    path = db_path()
+    if _initialized_for == path:
+        return
+    with _init_lock:
+        conn = get_connection()
         try:
-            cursor.execute(f"SELECT confidence_no_website FROM {TABLE_NAME} LIMIT 1")
-        except sqlite3.OperationalError:
-            cursor.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN confidence_no_website REAL DEFAULT 0.0")
-            logger.info("Migrated: added confidence_no_website column to leads table.")
+            cols = ", ".join(f"{name} {decl}" for name, decl in _COLUMNS.items())
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {TABLE_NAME} ({cols})")
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({TABLE_NAME})")}
+            for name, decl in _COLUMNS.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {name} {decl.replace('PRIMARY KEY', '')}")
+                    logger.info("Migrated leads table: added column %s", name)
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_leads_dedupe ON {TABLE_NAME}(dedupe_key)")
+            conn.commit()
+            _initialized_for = path
+        finally:
+            conn.close()
 
-        cursor.execute("""
-            SELECT name FROM sqlite_master WHERE type='table' AND name='stored_leads'
-        """)
-        if cursor.fetchone():
-            cursor.execute(f"""
-                INSERT OR IGNORE INTO {TABLE_NAME} (
-                    id, business_name, category, address, phone, email, has_website,
-                    website_url, google_maps_url, social_links, source_url, location, scanned_at
-                )
-                SELECT
-                    id, business_name, category, address, phone, email, has_website,
-                    website_url, google_maps_url, social_links, source_url, location, scanned_at
-                FROM stored_leads
-            """)
-        conn.commit()
-        logger.info(f"Database initialized successfully at: {DB_PATH}")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        raise e
-    finally:
-        conn.close()
 
-def generate_lead_id(name: str, category: str | None, address: str | None) -> str:
-    """Generates a unique hash ID for a lead based on name, category, and address."""
-    key = f"{name.lower().strip()}|{(category or '').lower().strip()}|{(address or '').lower().strip()}"
+def generate_lead_id(name: str, category: str | None, address: str | None, dedupe_key: str | None = None) -> str:
+    key = dedupe_key or f"{name.lower().strip()}|{(category or '').lower().strip()}|{(address or '').lower().strip()}"
     return hashlib.md5(key.encode("utf-8")).hexdigest()
 
+
 def save_leads(leads, location: str) -> int:
-    """Saves a list of leads to the database. Returns count of newly inserted leads."""
-    init_db()  # Ensure database is initialized
-    conn = get_connection()
-    saved_count = 0
-    try:
-        cursor = conn.cursor()
-        for lead in leads:
-            # Generate stable unique ID
-            lead_id = generate_lead_id(lead.business_name, lead.category, lead.address)
-            
-            # Serialize social links list to JSON string
-            social_links_str = json.dumps(lead.social_links or [])
-            
-            # Get confidence score — default to 0.8 if not present
-            confidence = getattr(lead, 'confidence_no_website', 0.8)
-
-            cursor.execute(f"""
-                INSERT OR IGNORE INTO {TABLE_NAME} (
-                    id, business_name, category, address, phone, email, 
-                    has_website, website_url, google_maps_url, social_links, source_url,
-                    location, confidence_no_website, scanned_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                lead_id,
-                lead.business_name.strip(),
-                (lead.category or "").strip(),
-                (lead.address or "").strip(),
-                (lead.phone or "").strip(),
-                (lead.email or "").strip(),
-                1 if lead.has_website else 0,
-                (lead.website_url or "").strip(),
-                (lead.google_maps_url or "").strip(),
-                social_links_str,
-                (lead.source_url or "").strip(),
-                location.strip(),
-                confidence,
-                datetime.now(UTC).isoformat()
-            ))
-            saved_count += cursor.rowcount
-        conn.commit()
-        logger.info(f"Successfully saved {saved_count} leads to SQLite database.")
-    except Exception as e:
-        logger.error(f"Error saving leads to SQLite: {e}")
-        conn.rollback()
-    finally:
-        conn.close()
-    return saved_count
-
-def get_stored_leads(category: str | None = None, location: str | None = None) -> list[dict]:
-    """Retrieves stored no-website leads, optionally filtered by category/location."""
+    """Insert new leads and refresh existing ones. Returns the number of rows written."""
     init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for lead in leads:
+        rows.append({
+            "id": generate_lead_id(lead.business_name, lead.category, lead.address, getattr(lead, "dedupe_key", None)),
+            "business_name": lead.business_name.strip(),
+            "category": (lead.category or "").strip(),
+            "address": (lead.address or "").strip(),
+            "phone": (lead.phone or "").strip(),
+            "email": (lead.email or "").strip(),
+            "has_website": 1 if lead.has_website else 0,
+            "website_url": (lead.website_url or "").strip(),
+            "google_maps_url": (lead.google_maps_url or "").strip(),
+            "social_links": json.dumps(lead.social_links or []),
+            "source_url": (lead.source_url or "").strip(),
+            "location": location.strip(),
+            "confidence_no_website": float(lead.confidence_no_website or 0.0),
+            "scanned_at": now,
+            "website_status": getattr(lead, "website_status", None),
+            "evidence": json.dumps(getattr(lead, "evidence", []) or []),
+            "sources": json.dumps(getattr(lead, "sources", []) or []),
+            "dedupe_key": getattr(lead, "dedupe_key", None),
+            "rating": getattr(lead, "rating", None),
+            "review_count": getattr(lead, "review_count", None),
+        })
+    if not rows:
+        return 0
+    names = list(rows[0].keys())
+    updates = ", ".join(f"{n}=excluded.{n}" for n in names if n != "id")
+    sql = (f"INSERT INTO {TABLE_NAME} ({', '.join(names)}) VALUES ({', '.join(':' + n for n in names)}) "
+           f"ON CONFLICT(id) DO UPDATE SET {updates}")
     conn = get_connection()
-    results = []
     try:
-        cursor = conn.cursor()
-        query = f"SELECT * FROM {TABLE_NAME} WHERE 1=1"
-        params = []
-        
-        if category:
-            query += " AND LOWER(category) LIKE ?"
-            params.append(f"%{category.lower().strip()}%")
-        if location:
-            query += " AND LOWER(location) LIKE ?"
-            params.append(f"%{location.lower().strip()}%")
-            
-        query += " ORDER BY scanned_at DESC"
-        
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        for row in rows:
-            if _looks_like_standalone_source_url(row["source_url"]):
-                continue
-
-            social_links = []
-            try:
-                social_links = json.loads(row["social_links"]) if row["social_links"] else []
-            except Exception:
-                pass
-
-            # Safely get confidence_no_website (may not exist in old DBs)
-            try:
-                confidence = float(row["confidence_no_website"]) if row["confidence_no_website"] else 0.0
-            except Exception:
-                confidence = 0.0
-
-            results.append({
-                "id": row["id"],
-                "business_name": row["business_name"],
-                "category": row["category"],
-                "address": row["address"],
-                "phone": row["phone"],
-                "email": row["email"],
-                "has_website": bool(row["has_website"]),
-                "website_url": row["website_url"],
-                "google_maps_url": row["google_maps_url"],
-                "social_links": social_links,
-                "source_url": row["source_url"],
-                "confidence_no_website": confidence,
-                "location": row["location"],
-                "scanned_at": row["scanned_at"]
-            })
-    except Exception as e:
-        logger.error(f"Error querying stored leads: {e}")
+        conn.executemany(sql, rows)
+        conn.commit()
     finally:
         conn.close()
-    return results
+    logger.info("Saved %d leads to SQLite.", len(rows))
+    return len(rows)
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    def _json_list(value: str | None) -> list:
+        try:
+            parsed = json.loads(value) if value else []
+            return parsed if isinstance(parsed, list) else []
+        except (TypeError, ValueError):
+            return []
+
+    status = row["website_status"] or ("has_website" if row["has_website"] else "unverified")
+    return {
+        "id": row["id"],
+        "business_name": row["business_name"],
+        "category": row["category"] or None,
+        "address": row["address"] or None,
+        "phone": row["phone"] or None,
+        "email": row["email"] or None,
+        "has_website": bool(row["has_website"]),
+        "website_url": row["website_url"] or None,
+        "website_status": status,
+        "google_maps_url": row["google_maps_url"] or None,
+        "social_links": _json_list(row["social_links"]),
+        "has_social_media": bool(_json_list(row["social_links"])),
+        "source_url": row["source_url"] or None,
+        "confidence_no_website": max(0.0, min(1.0, float(row["confidence_no_website"] or 0.0))),
+        "evidence": _json_list(row["evidence"]),
+        "sources": _json_list(row["sources"]),
+        "rating": row["rating"],
+        "review_count": row["review_count"],
+        "dedupe_key": row["dedupe_key"],
+        "location": row["location"],
+        "scanned_at": row["scanned_at"],
+    }
+
+
+def get_stored_leads(category: str | None = None, location: str | None = None,
+                     status: str | None = None) -> list[dict]:
+    """Stored leads, newest first, optionally filtered."""
+    init_db()
+    query = f"SELECT * FROM {TABLE_NAME} WHERE 1=1"
+    params: list[str] = []
+    if category:
+        query += " AND LOWER(category) LIKE ?"
+        params.append(f"%{category.lower().strip()}%")
+    if location:
+        query += " AND LOWER(location) LIKE ?"
+        params.append(f"%{location.lower().strip()}%")
+    query += " ORDER BY scanned_at DESC"
+    conn = get_connection()
+    try:
+        rows = [_row_to_dict(r) for r in conn.execute(query, params).fetchall()]
+    finally:
+        conn.close()
+    if status:
+        rows = [r for r in rows if r["website_status"] == status]
+    return rows
+
+
+def get_known_lead_keys(category: str, location: str) -> tuple[set[str], set[str]]:
+    """Dedupe keys and compact names of businesses already stored for this search."""
+    from app.leads.matching import compact, normalize_name
+
+    init_db()
+    loc_term = location.lower().strip().split(",")[0].strip()
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT business_name, dedupe_key FROM {TABLE_NAME} WHERE LOWER(location) LIKE ?",
+            (f"%{loc_term}%",),
+        ).fetchall()
+    finally:
+        conn.close()
+    keys = {r["dedupe_key"] for r in rows if r["dedupe_key"]}
+    names = {compact(normalize_name(r["business_name"])) for r in rows}
+    return keys, names
+
 
 def get_discovered_names(category: str, location: str) -> list[str]:
-    """Retrieves list of business names already discovered for this category and location.
-    
-    FIX: Uses LIKE matching instead of exact equality for location, so
-    "New York" matches "New York, USA" and vice versa.  Also uses LIKE
-    for category so "Salon" matches "Beauty Salon" etc.
-    """
+    """Kept for backwards compatibility with older scripts."""
     init_db()
     conn = get_connection()
-    names = []
     try:
-        cursor = conn.cursor()
-        # FIX: Use LIKE instead of = for both category and location
-        # so that slight variations ("New York" vs "New York, USA") still
-        # match and prevent re-discovering the same businesses.
-        cat_term = category.lower().strip()
-        loc_term = location.lower().strip().split(",")[0].strip()  # Use primary part
-        cursor.execute(
+        rows = conn.execute(
             f"SELECT business_name FROM {TABLE_NAME} WHERE LOWER(category) LIKE ? AND LOWER(location) LIKE ?",
-            (f"%{cat_term}%", f"%{loc_term}%")
-        )
-        rows = cursor.fetchall()
-        names = [row["business_name"] for row in rows]
-    except Exception as e:
-        logger.error(f"Error fetching discovered business names: {e}")
+            (f"%{category.lower().strip()}%", f"%{location.lower().strip().split(',')[0].strip()}%"),
+        ).fetchall()
     finally:
         conn.close()
-    return names
+    return [r["business_name"] for r in rows]
+
 
 def delete_stored_lead(lead_id: str) -> bool:
-    """Deletes a lead by ID from the database. Returns True if deleted."""
     init_db()
     conn = get_connection()
-    success = False
     try:
-        cursor = conn.cursor()
-        cursor.execute(f"DELETE FROM {TABLE_NAME} WHERE id = ?", (lead_id,))
+        cur = conn.execute(f"DELETE FROM {TABLE_NAME} WHERE id = ?", (lead_id,))
         conn.commit()
-        success = cursor.rowcount > 0
-        logger.info(f"Deleted lead ID {lead_id} from SQLite database: {success}")
-    except Exception as e:
-        logger.error(f"Error deleting lead from SQLite: {e}")
-        conn.rollback()
+        return cur.rowcount > 0
     finally:
         conn.close()
-    return success

@@ -81,8 +81,22 @@ type LeadBusiness = {
   social_links: string[];
   source_url: string | null;
   confidence_no_website: number;
+  website_status?: WebsiteStatus;
+  evidence?: string[];
+  sources?: string[];
+  rating?: number | null;
+  review_count?: number | null;
   location?: string | null;
   scanned_at?: string | null;
+};
+
+type WebsiteStatus = "has_website" | "broken_website" | "no_website" | "unverified";
+
+type SourceDiagnostic = {
+  name: string;
+  ok: boolean;
+  count: number;
+  detail: string;
 };
 
 type LeadDraftEmail = {
@@ -106,6 +120,32 @@ type LeadSearchResponse = {
   draft_email: LeadDraftEmail;
   search_query_used: string;
   errors: string[];
+  sources?: SourceDiagnostic[];
+  resolved_location?: string | null;
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  google_places: "Google Places",
+  serper_maps: "Google Maps (Serper)",
+  openstreetmap: "OpenStreetMap",
+  web_search: "Social pages",
+};
+
+const STATUS_CHIPS: Record<WebsiteStatus, { label: string; color: "success" | "error" | "warning" | "default" }> = {
+  no_website: { label: "No Website", color: "error" },
+  broken_website: { label: "Broken Website", color: "warning" },
+  unverified: { label: "Unverified", color: "default" },
+  has_website: { label: "Has Website", color: "success" },
+};
+
+// Older stored rows have no website_status; derive one from has_website.
+const leadStatus = (lead: LeadBusiness): WebsiteStatus =>
+  lead.website_status ?? (lead.has_website ? "has_website" : "unverified");
+
+// A sales lead = verified as having no working website.
+const isWebsiteLead = (lead: LeadBusiness) => {
+  const status = leadStatus(lead);
+  return status === "no_website" || status === "broken_website";
 };
 
 const rawApiBase = process.env.NEXT_PUBLIC_API_BASE_URL || "https://ai-sales-lead-research-outreach-agent-7p9e.onrender.com";
@@ -267,6 +307,8 @@ export default function Home() {
   const [isCustomOutreachLoading, setIsCustomOutreachLoading] = useState(false);
   const [filterNoWebsite, setFilterNoWebsite] = useState(false);
   const [searchQueryUsed, setSearchQueryUsed] = useState("");
+  const [sourceReports, setSourceReports] = useState<SourceDiagnostic[]>([]);
+  const [resolvedLocation, setResolvedLocation] = useState<string | null>(null);
   const [searchPage, setSearchPage] = useState(1);
   const [mainTab, setMainTab] = useState<"scanner" | "database">("scanner");
   const [storedLeads, setStoredLeads] = useState<LeadBusiness[]>([]);
@@ -308,7 +350,8 @@ export default function Home() {
       "Address",
       "Phone",
       "Email",
-      "Has Website",
+      "Website Status",
+      "Confidence No Website",
       "Website URL",
       "Google Maps URL",
       "Social Links",
@@ -323,7 +366,8 @@ export default function Home() {
       lead.address || "",
       lead.phone || "",
       lead.email || "",
-      lead.has_website ? "Yes" : "No",
+      leadStatus(lead),
+      String(lead.confidence_no_website ?? ""),
       lead.website_url || "",
       lead.google_maps_url || "",
       (lead.social_links || []).join("; "),
@@ -475,14 +519,16 @@ export default function Home() {
       setLeads(data.leads);
       setGlobalEmail(data.draft_email);
       setSearchQueryUsed(data.search_query_used);
+      setSourceReports(data.sources || []);
+      setResolvedLocation(data.resolved_location || null);
       fetchStoredLeads();
       if (data.errors && data.errors.length > 0) {
-        setError(data.errors.join(", "));
+        setError(data.errors.join("\n"));
       }
 
       // Default select the first lead if any exist
       if (data.leads && data.leads.length > 0) {
-        const firstNoWeb = data.leads.find((l) => !l.has_website);
+        const firstNoWeb = data.leads.find(isWebsiteLead);
         if (firstNoWeb) {
           selectLead(firstNoWeb);
         } else {
@@ -545,12 +591,12 @@ export default function Home() {
       const fallbackSubject = `Website proposal for ${lead.business_name}`;
       const fallbackBody =
         globalEmail?.body.replace("Prospect Business", lead.business_name) ||
-        `Hi,\n\nI noticed ${lead.business_name} does not have a website...`;
+        `Hi,\n\nI came across ${lead.business_name} online and wanted to ask whether you'd be interested in a professional website.`;
       
       const fallbackDrafts: LeadOutreachDrafts = {
         email_subject: fallbackSubject,
         email_body: fallbackBody,
-        social_dm_body: `Hi ${lead.business_name} team,\n\nI noticed you have an active page here but no main website yet...`,
+        social_dm_body: `Hi ${lead.business_name} team! I came across your page and wanted to ask if you'd be open to a quick website proposal.`,
         sms_whatsapp_body: `Hi, this is ${senderName} from ${senderCompany}. I saw ${lead.business_name} online and wanted to ask if you'd be open to a website proposal?`,
         call_script_body: `Pitch: Hi, I'm calling from ${senderCompany} regarding setting up a website for ${lead.business_name}...`,
       };
@@ -592,7 +638,7 @@ export default function Home() {
   };
 
   // Filter leads based on toggle
-  const displayedLeads = leads.filter((lead) => !filterNoWebsite || !lead.has_website);
+  const displayedLeads = leads.filter((lead) => !filterNoWebsite || isWebsiteLead(lead));
 
   return (
     <ThemeProvider theme={theme}>
@@ -908,7 +954,7 @@ export default function Home() {
 
                       {error && (
                         <Grid size={12}>
-                          <Alert severity="warning" sx={{ borderRadius: 2 }}>
+                          <Alert severity="warning" sx={{ borderRadius: 2, whiteSpace: "pre-line" }}>
                             {error}
                           </Alert>
                         </Grid>
@@ -936,13 +982,33 @@ export default function Home() {
                       </Grid>
                       <Grid size={6} sx={{ textAlign: "center" }}>
                         <Typography variant="h5" color="error.main" sx={{ fontWeight: 800 }}>
-                          {leads.filter((l) => !l.has_website).length}
+                          {leads.filter(isWebsiteLead).length}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
-                          No Standalone Site
+                          No Working Website
                         </Typography>
                       </Grid>
                     </Grid>
+                    {resolvedLocation && (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                        Searched area: {resolvedLocation}
+                      </Typography>
+                    )}
+                    {sourceReports.length > 0 && (
+                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 1 }}>
+                        {sourceReports.map((src) => (
+                          <Tooltip key={src.name} title={src.detail || ""}>
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={src.ok ? (src.count > 0 ? "success" : "default") : "default"}
+                              label={`${SOURCE_LABELS[src.name] || src.name}: ${src.ok ? src.count : "off"}`}
+                              sx={{ height: 20, fontSize: "0.65rem", opacity: src.ok ? 1 : 0.55 }}
+                            />
+                          </Tooltip>
+                        ))}
+                      </Box>
+                    )}
                   </CardContent>
                 </Card>
               )}
@@ -1119,28 +1185,16 @@ export default function Home() {
                                     }}
                                   />
                                 )}
-                                {lead.has_website ? (
-                                  <Chip
-                                    label="Has Website"
-                                    color="success"
-                                    size="small"
-                                    sx={{ height: 20, fontSize: "0.65rem", fontWeight: "bold" }}
-                                  />
-                                ) : lead.has_social_media ? (
-                                  <Chip
-                                    label="Social Page Only"
-                                    color="warning"
-                                    size="small"
-                                    sx={{ height: 20, fontSize: "0.65rem", fontWeight: "bold" }}
-                                  />
-                                ) : (
-                                  <Chip
-                                    label="No Website"
-                                    color="error"
-                                    size="small"
-                                    sx={{ height: 20, fontSize: "0.65rem", fontWeight: "bold" }}
-                                  />
-                                )}
+                                <Chip
+                                  label={
+                                    leadStatus(lead) === "no_website" && lead.has_social_media
+                                      ? "Social Page Only"
+                                      : STATUS_CHIPS[leadStatus(lead)].label
+                                  }
+                                  color={STATUS_CHIPS[leadStatus(lead)].color}
+                                  size="small"
+                                  sx={{ height: 20, fontSize: "0.65rem", fontWeight: "bold" }}
+                                />
                               </Box>
                             </Box>
 
@@ -1170,6 +1224,21 @@ export default function Home() {
                                 </Grid>
                               )}
                             </Grid>
+
+                            {lead.evidence && lead.evidence.length > 0 && (
+                              <Box sx={{ mt: 1, pl: 1, borderLeft: "2px solid rgba(255,255,255,0.08)" }}>
+                                {lead.evidence.map((line, i) => (
+                                  <Typography
+                                    key={i}
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{ display: "block", fontSize: "0.68rem", lineHeight: 1.4 }}
+                                  >
+                                    {line}
+                                  </Typography>
+                                ))}
+                              </Box>
+                            )}
 
                             {/* Direct Call / Contact Actions */}
                             <Box sx={{ mt: 1.5, display: "flex", flexWrap: "wrap", gap: 0.8 }}>
@@ -1578,11 +1647,13 @@ export default function Home() {
                               </Typography>
                             </TableCell>
                             <TableCell>
-                              {lead.has_website ? (
-                                <Chip label="Has Website" color="success" size="small" />
-                              ) : (
-                                <Chip label="No Website" color="error" size="small" />
-                              )}
+                              <Tooltip title={(lead.evidence || []).join(" ")}>
+                                <Chip
+                                  label={STATUS_CHIPS[leadStatus(lead)].label}
+                                  color={STATUS_CHIPS[leadStatus(lead)].color}
+                                  size="small"
+                                />
+                              </Tooltip>
                             </TableCell>
                             <TableCell>
                               <Typography variant="caption" color="text.secondary">

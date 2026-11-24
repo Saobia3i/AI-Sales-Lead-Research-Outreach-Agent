@@ -30,6 +30,11 @@ patterns (relevance filtering, verification-before-synthesis, token tracking).
    without an explicit, separate request.
 5. **Cost discipline.** Cap search calls per run, cache per-company results, log token usage per
    pipeline run. Don't let one agent loop uncontrolled.
+6. **A failed or empty search is not evidence of absence.** (From a lead-discovery bug: search
+   errors were scored as 85-95% "no website".) Lower confidence and mark the result unverified.
+7. **Leads come from structured place data, not from search-result titles.** (From a bug that
+   stored "List of Gyms" and PDFs as businesses.) Web results may only add businesses when the
+   URL is one business's own profile page and the name appears in the cited result.
 
 ## Tech stack (do not deviate without discussion)
 - FastAPI + Pydantic backend, LangGraph for orchestration, Groq as primary LLM provider (model

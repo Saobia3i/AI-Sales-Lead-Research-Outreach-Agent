@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.providers.llm import llm_provider
 from app.graph import run_graph
 from app.nodes import outreach_writer_node, verification_node
 from app.schemas import (
@@ -25,7 +25,8 @@ from app.schemas import (
     StoredLead,
     DeleteStoredLeadResponse,
 )
-from app.services.lead_discovery import find_leads_pipeline, generate_custom_lead_email
+from app.leads.outreach import generate_custom_lead_email
+from app.leads.pipeline import find_leads_pipeline
 from app.services.email import send_smtp_email
 from app.services.db import get_stored_leads, delete_stored_lead
 
@@ -41,19 +42,24 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     import logging
+
+    from app.providers.web_search import available_backends
+    from app.services.db import init_db
+
     logger = logging.getLogger("uvicorn")
-    try:
-        from app.services.lead_discovery import _firecrawl_available
-        if not _firecrawl_available:
-            logger.warning("⚠️ Firecrawl package is NOT installed or could not be imported! Falling back to raw HTTP validation.")
-        elif not settings.firecrawl_api_key:
-            logger.warning("⚠️ FIRECRAWL_API_KEY is not configured in settings/env! Falling back to raw HTTP validation.")
-        else:
-            logger.info("✅ Firecrawl initialized successfully and ready for Google Search verification.")
-    except Exception as e:
-        logger.error(f"Startup check failed: {e}")
+    init_db()
+    place_sources = ["openstreetmap"]
+    if settings.google_places_api_key:
+        place_sources.insert(0, "google_places")
+    if settings.serper_api_key:
+        place_sources.insert(0, "serper_maps")
+    logger.info("Lead sources: %s | web search: %s | LLM: %s",
+                ", ".join(place_sources), ", ".join(available_backends()),
+                "configured" if llm_provider.available else "NOT configured (heuristics only)")
+    if not (settings.google_places_api_key or settings.serper_api_key):
+        logger.warning("No GOOGLE_PLACES_API_KEY / SERPER_API_KEY: using OpenStreetMap only; coverage will be lower.")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -92,9 +98,11 @@ async def send_email(request: SendEmailRequest):
 
 
 @app.get("/api/v1/stored_leads", response_model=list[StoredLead])
-async def get_leads(category: str | None = None, location: str | None = None) -> list[StoredLead]:
+async def get_leads(
+    category: str | None = None, location: str | None = None, status: str | None = None
+) -> list[StoredLead]:
     try:
-        return get_stored_leads(category=category, location=location)
+        return get_stored_leads(category=category, location=location, status=status)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve stored leads: {str(e)}")
 

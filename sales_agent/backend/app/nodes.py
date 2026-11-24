@@ -71,7 +71,7 @@ async def research_node(state: LangGraphState) -> LangGraphState:
     results = await asyncio.gather(
         *[run_search(task, query) for task, query in list(task_queries.items())[:calls_allowed]]
     )
-    chunks = [chunk for group in results for chunk in group]
+    chunks = [chunk for group in results for chunk in (group or [])]
     metrics = current.metrics.model_copy(update={"search_calls": min(len(task_queries), calls_allowed)})
     return state_update(current, raw_evidence=chunks, metrics=metrics)
 
@@ -98,7 +98,8 @@ async def synthesis_node(state: LangGraphState) -> LangGraphState:
     profile = await _llm_synthesize_profile(current)
     if profile is None:
         profile = _heuristic_profile(current)
-    elif not profile.evidence_sources:
+    else:
+        # Evidence refs must come from what was actually retrieved, never from the LLM.
         profile = profile.model_copy(update={"evidence_sources": _evidence_refs(current)})
 
     cache_key = profile.website or current.resolved_website or current.company_input
