@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from app.providers.web_search import _ddgs_engines
 from app.schemas import EvidenceChunk, ResearchTask
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ class DDGSSearchProvider:
             )
         except Exception as exc:
             logger.warning(f"DDGS search failed for {query!r} (region={effective_region}): {exc}")
-            return None
+            return []
 
     def _search_sync(
         self,
@@ -52,7 +53,7 @@ class DDGSSearchProvider:
 
         chunks: list[EvidenceChunk] = []
         with DDGS() as ddgs:
-            for result in ddgs.text(query, max_results=max_results, region=region):
+            for result in ddgs.text(query, max_results=max_results, region=region, backend=_ddgs_engines()):
                 url = result.get("href") or result.get("url")
                 snippet = result.get("body") or result.get("snippet")
                 if not url or not snippet:

@@ -167,20 +167,29 @@ class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
 
 
+WebsiteStatus = Literal["has_website", "broken_website", "no_website", "unverified"]
+
+
 class LeadBusiness(BaseModel):
-    """A discovered business without a website."""
+    """A discovered local business and the verdict on its website."""
     business_name: str
     category: str | None = None
     address: str | None = None
     phone: str | None = None
     email: str | None = None
     google_maps_url: str | None = None
-    has_website: bool = False
-    website_url: str | None = None  # null means no website found
+    has_website: bool = False  # True only for a verified, working own website
+    website_url: str | None = None  # the working site, or the broken one for broken_website
+    website_status: WebsiteStatus = "unverified"
     has_social_media: bool = False
     social_links: list[str] = Field(default_factory=list)
     source_url: str | None = None  # where we found this business
-    confidence_no_website: float = Field(ge=0.0, le=1.0, default=0.8)
+    confidence_no_website: float = Field(ge=0.0, le=1.0, default=0.0)
+    evidence: list[str] = Field(default_factory=list)  # human-readable reasons for the verdict
+    sources: list[str] = Field(default_factory=list)  # data sources that listed this business
+    rating: float | None = None
+    review_count: int | None = None
+    dedupe_key: str | None = None
 
 
 class LeadDraftEmail(BaseModel):
@@ -205,8 +214,16 @@ class LeadSearchRequest(BaseModel):
     sender_name: str = "Your Name"
     sender_company: str = "Your Company"
     service_description: str = "We build professional, affordable websites for small businesses"
-    max_results: int = Field(default=15, ge=1, le=50)  # Kept for API compatibility; scanner returns all valid leads.
-    page: int = Field(default=1, ge=1)
+    max_results: int = Field(default=15, ge=1, le=50)  # businesses to verify per scan
+    page: int = Field(default=1, ge=1, le=5)
+    include_known: bool = False  # re-check businesses already in the database
+
+
+class SourceDiagnostic(BaseModel):
+    name: str
+    ok: bool
+    count: int = 0
+    detail: str = ""
 
 
 class LeadSearchResponse(BaseModel):
@@ -216,11 +233,12 @@ class LeadSearchResponse(BaseModel):
     draft_email: LeadDraftEmail  # generic template or example
     search_query_used: str
     errors: list[str] = Field(default_factory=list)
+    sources: list[SourceDiagnostic] = Field(default_factory=list)
+    resolved_location: str | None = None
 
 
 class StoredLead(LeadBusiness):
     id: str
-    confidence_no_website: float = Field(ge=0.0, le=1.0, default=0.0)
     location: str | None = None
     scanned_at: str | None = None
 
